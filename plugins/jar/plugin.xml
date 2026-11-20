@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin xmlns="urn:mini:maven:plugin" name="jar" provides="jar">
+  <implementation class="mini.maven.plugins.JarPlugin"/>
+  <tools>
+    <tool name="jar" path="${java.home}/bin/jar" versionArg="--version"/>
+  </tools>
+  <settings>
+    <setting name="version" value="2.0.0"/>
+  </settings>
+  <cache scope="module-artifact"/>
+</plugin>

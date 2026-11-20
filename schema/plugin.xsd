@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:mini:maven:plugin"
+           xmlns="urn:mini:maven:plugin"
+           elementFormDefault="qualified">
+
+  <xs:element name="plugin">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="implementation" type="implementation"/>
+        <xs:element name="tools" type="tools" minOccurs="0"/>
+        <xs:element name="settings" type="settings" minOccurs="0"/>
+        <xs:element name="args" type="args" minOccurs="0"/>
+        <xs:element name="cache" type="cache" minOccurs="0"/>
+      </xs:sequence>
+      <xs:attribute name="name" type="xs:string" use="required"/>
+      <xs:attribute name="provides" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:complexType name="implementation">
+    <xs:attribute name="class" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="tools">
+    <xs:sequence>
+      <xs:element name="tool" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="name" type="xs:string" use="required"/>
+          <xs:attribute name="path" type="xs:string" use="required"/>
+          <xs:attribute name="versionArg" type="xs:string"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="settings">
+    <xs:sequence>
+      <xs:element name="setting" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="name" type="xs:string" use="required"/>
+          <xs:attribute name="value" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="args">
+    <xs:sequence>
+      <xs:element name="arg" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="value" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="cache">
+    <xs:attribute name="scope" type="xs:string" use="required"/>
+  </xs:complexType>
+
+</xs:schema>

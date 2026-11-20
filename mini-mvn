@@ -1,0 +1,32 @@
+#!/bin/sh
+# mini-mvn - bootstrap and run the standalone mini-maven build engine.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+JAVA_HOME=$(sh "$ROOT/scripts/find-jdk17.sh")
+export JAVA_HOME
+
+STATE="$ROOT/target/.mini-maven"
+OUT="$STATE/bootstrap"
+STAMP="$STATE/bootstrap.stamp"
+SRC="$ROOT/mini-maven/src/main/java"
+JARS=$(find "$ROOT/third-party/repository" -name '*.jar' | tr '\n' ':')
+
+mkdir -p "$STATE"
+
+needs_build=0
+if [ ! -f "$STAMP" ] || [ ! -f "$OUT/mini/maven/Main.class" ]; then
+    needs_build=1
+elif [ -n "$(find "$SRC" -name '*.java' -newer "$STAMP" -print -quit)" ]; then
+    needs_build=1
+fi
+
+if [ "$needs_build" -eq 1 ]; then
+    rm -rf "$OUT"
+    mkdir -p "$OUT"
+    find "$SRC" -name '*.java' > "$STATE/bootstrap-sources.txt"
+    "$JAVA_HOME/bin/javac" --release 17 -cp "$JARS" -d "$OUT" @"$STATE/bootstrap-sources.txt"
+    : > "$STAMP"
+fi
+
+exec "$JAVA_HOME/bin/java" -Dmini.mvn.home="$ROOT" -cp "$OUT:$JARS" mini.maven.Main "$@"

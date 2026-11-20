@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="urn:mini:maven:kava" format="1">
+  <name>mini-mvn</name>
+  <version>0.1</version>
+
+  <platforms>
+    <platform id="x86_64-linux-gnu" arch="x86_64" os="linux"/>
+  </platforms>
+
+  <modules>
+    <module name="mini-maven" path="mini-maven"/>
+  </modules>
+
+  <plugins>
+    <plugin id="javac" path="plugins/javac"/>
+    <plugin id="jar" path="plugins/jar"/>
+    <plugin id="junit" path="plugins/junit"/>
+  </plugins>
+
+  <bindings>
+    <binding module="mini-maven" sources="java" plugin="javac"/>
+    <binding artifact="jar" plugin="jar"/>
+  </bindings>
+
+  <goals>
+    <goal name="build" default="true"/>
+    <goal name="test" plugin="junit" suite="smoke"/>
+  </goals>
+</project>

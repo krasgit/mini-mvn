@@ -1,0 +1,1036 @@
+package mini.maven;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import mini.maven.engine.BuildException;
+import mini.maven.engine.Engine;
+import mini.maven.model.KavaFile;
+import mini.maven.model.ModuleFile;
+import mini.maven.model.PluginFile;
+import mini.maven.model.StateFile;
+import mini.maven.xml.XmlException;
+
+public final class Main {
+
+    public static final String VERSION = "0.1";
+    private static final String ENGINE = "mini-mvn " + VERSION;
+
+    public static void main(String[] args) {
+        int code;
+        try {
+            code = run(args);
+        } catch (UsageException e) {
+            System.err.println("mini-mvn: " + e.getMessage());
+            System.err.println("run 'mini-mvn --help' for usage");
+            code = 2;
+        } catch (BuildException e) {
+            System.err.println("mini-mvn: " + e.getMessage());
+            code = 1;
+        } catch (XmlException e) {
+            System.err.println("mini-mvn: " + e.getMessage());
+            code = 1;
+        } catch (Throwable t) {
+            System.err.println("mini-mvn: internal error: " + t);
+            t.printStackTrace(System.err);
+            code = 1;
+        }
+        System.exit(code);
+    }
+
+    static int run(String[] args) throws IOException {
+        if (args.length == 0 || args[0].equals("--help") || args[0].equals("-h")
+                || args[0].equals("help")) {
+            System.out.print(usage());
+            return 0;
+        }
+
+        String command = args[0];
+        if (command.equals("run")) {
+            return runProgram(args);
+        }
+        if (command.equals("dist")) {
+            return distProgram(args);
+        }
+        Options options = Options.parse(args, 1);
+        Path root = options.file == null ? Path.of("kava.xml") : options.file;
+        root = root.toAbsolutePath().normalize();
+        Path projectDir = root.getParent();
+
+        KavaFile project = KavaFile.load(root);
+        return switch (command) {
+            case "build" -> build(project, projectDir, options);
+            case "install" -> install(project, projectDir, options);
+            case "test" -> test(project, projectDir, options);
+            case "doctor" -> doctor(project, projectDir, options);
+            case "clean" -> clean(project, projectDir, options);
+            default -> throw new UsageException("unknown command: " + command);
+        };
+    }
+
+    /**
+     * {@code mini-mvn run <project-dir> [-- args...]}: compile a manifest-based program with
+     * the mini-compiler and execute the produced native binary.
+     *
+     * <p>This runs a <em>sample/user program</em> described by a {@code program.manifest}
+     * (as under {@code project/}), not the toolchain modules. It always: (1) builds the
+     * compiler and native runtime incrementally, so the compile can link; (2) runs
+     * {@code mini.MiniCompiler --manifest <dir>/program.manifest --emit=exe}; and (3)
+     * executes the produced binary with the terminal's stdin/stdout/stderr attached.
+     * Arguments after a bare {@code --} are passed through to the program.
+     *
+     * <p>The command's exit code is the program's own exit code.
+     */
+    private static int runProgram(String[] args) throws IOException {
+        // args[1] is the project dir (optional, defaults to '.'); everything after a bare
+        // "--" is the program's own arguments.
+        List<String> programArgs = new ArrayList<>();
+        String dirArg = null;
+        boolean verbose = false;
+        String runtimeOverride = null;
+        int sep = -1;
+        for (int i = 1; i < args.length; i++) {
+            if (args[i].equals("--")) { sep = i; break; }
+        }
+        int limit = sep < 0 ? args.length : sep;
+        for (int i = 1; i < limit; i++) {
+            if (args[i].equals("--verbose") || args[i].equals("-v")) {
+                verbose = true;
+                continue;
+            }
+            if (args[i].equals("--runtime") && i + 1 < limit) {
+                runtimeOverride = args[i + 1];
+                i++;
+                continue;
+            }
+            if (!args[i].startsWith("-") && dirArg == null) {
+                dirArg = args[i];
+                continue;
+            }
+            throw new UsageException("run takes a single project directory; unexpected '"
+                    + args[i] + "'");
+        }
+        if (sep >= 0) for (int i = sep + 1; i < args.length; i++) programArgs.add(args[i]);
+
+        Path programDir = Path.of(dirArg == null ? "." : dirArg).toAbsolutePath().normalize();
+        Path manifest = programDir.resolve("program.manifest");
+        if (!Files.isRegularFile(manifest)) {
+            throw new UsageException("no program.manifest in " + programDir
+                    + "\n  usage: mini-mvn run <project-dir> [-- args...]");
+        }
+
+        // The toolchain must exist to compile and link the program. Find the repository
+        // (the kava.xml above this program dir) and build the compiler + runtime first
+        // (incremental: a no-op when already built).
+        Path root = findKavaXml(programDir);
+        if (root == null) {
+            throw new UsageException("cannot find kava.xml above " + programDir
+                    + "\n  run from inside the mini-compiler repository");
+        }
+        Path projectDir = root.getParent();
+        KavaFile project = KavaFile.load(root);
+        Overview overview = loadAll(project, projectDir);
+        System.out.println(ENGINE + " run " + display(projectDir, programDir));
+        Engine engine = new Engine(projectDir, project, overview.modules, overview.plugins,
+                null, true, null, verbose, 1);
+        engine.build();
+
+        // Compile the program from its manifest to a native executable.
+        Path compilerJar = projectDir.resolve("target/compiler/mini-compiler-all.jar");
+        if (!Files.isRegularFile(compilerJar)) {
+            throw new BuildException("compiler jar not found at " + compilerJar
+                    + " (build failed?)");
+        }
+        List<String> compile = new ArrayList<>();
+        compile.add(javaHome() + "/bin/java");
+        compile.add("-jar");
+        compile.add(compilerJar.toString());
+        compile.add("--manifest");
+        compile.add(manifest.toString());
+        compile.add("--emit=exe");
+        if (runtimeOverride != null) {
+            compile.add("--runtime");
+            compile.add(runtimeOverride);
+        }
+        Path runtimeArchive = runtimeArchive(projectDir);
+        if (Files.isRegularFile(runtimeArchive)) {
+            compile.add("--runtime-lib");
+            compile.add(runtimeArchive.getParent().toString());
+        }
+        Map<String, String> env = new HashMap<>();
+        env.put("MINI_CORELIB", projectDir.resolve("corelib").toString());
+        mini.maven.engine.Exec.Result r = mini.maven.engine.Exec.run(compile, programDir, env, verbose);
+        if (!r.ok()) {
+            throw new BuildException("compiling " + display(projectDir, programDir)
+                    + " failed:\n" + r.output());
+        }
+
+        // Locate the produced binary: <out>/<simple name of main>. The compiler names the
+        // executable after the entry class, so read 'main' and 'out' from the manifest.
+        Map<String, String> keys = readManifestKeys(manifest);
+        String mainClass = keys.get("main");
+        if (mainClass == null) {
+            throw new UsageException(manifest + ": no 'main:' key, cannot locate the binary");
+        }
+        String outDir = keys.getOrDefault("out", "out");
+        String simpleName = mainClass.contains(".")
+                ? mainClass.substring(mainClass.lastIndexOf('.') + 1) : mainClass;
+        Path binary = programDir.resolve(outDir).resolve(simpleName);
+        if (!Files.isRegularFile(binary)) {
+            throw new BuildException("expected a binary at " + binary + " but none was produced");
+        }
+
+        // Execute it with the terminal attached, forwarding the program's own arguments.
+        List<String> cmd = new ArrayList<>();
+        cmd.add(binary.toString());
+        cmd.addAll(programArgs);
+        System.out.println(ENGINE + ": running " + display(projectDir, binary)
+                + (programArgs.isEmpty() ? "" : " " + String.join(" ", programArgs)));
+        ProcessBuilder pb = new ProcessBuilder(cmd).inheritIO().directory(programDir.toFile());
+        try {
+            Process process = pb.start();
+            return process.waitFor();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted while running " + binary, e);
+        }
+    }
+
+    /** Walk up from {@code dir} to the first directory containing a {@code kava.xml}. */
+    private static Path findKavaXml(Path dir) {
+        for (Path d = dir; d != null; d = d.getParent()) {
+            Path candidate = d.resolve("kava.xml");
+            if (Files.isRegularFile(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    /** Minimal reader for a manifest's scalar keys (only what {@code run} needs). */
+    private static Map<String, String> readManifestKeys(Path manifest) throws IOException {
+        Map<String, String> keys = new HashMap<>();
+        for (String raw : Files.readAllLines(manifest)) {
+            String line = raw;
+            int hash = line.indexOf('#');
+            if (hash >= 0) line = line.substring(0, hash);
+            // a two-space-indented line is a list continuation, not a key
+            if (!line.isEmpty() && Character.isWhitespace(line.charAt(0))) continue;
+            line = line.trim();
+            if (line.isEmpty()) continue;
+            int colon = line.indexOf(':');
+            if (colon <= 0) continue;
+            String key = line.substring(0, colon).trim();
+            String value = line.substring(colon + 1).trim();
+            if (!value.isEmpty()) keys.putIfAbsent(key, value);
+        }
+        return keys;
+    }
+
+    private static int build(KavaFile project, Path projectDir, Options options)
+            throws IOException {
+        Overview overview = loadAll(project, projectDir);
+        if (options.module != null && project.module(options.module) == null) {
+            throw new UsageException("unknown module: " + options.module);
+        }
+        System.out.println(ENGINE);
+        System.out.println("project " + project.name()
+                + (project.version() == null ? "" : " " + project.version()));
+        Engine engine = new Engine(projectDir, project, overview.modules, overview.plugins,
+                options.module, options.withDeps, options.target, options.verbose,
+                options.jobs);
+        engine.build();
+        return 0;
+    }
+
+    /**
+     * Build, then stage the produced artifacts under an install prefix (default
+     * {@code dist/}, overridable with {@code --to}). Jar artifacts land in
+     * {@code <prefix>/bin}; the per-platform native libraries ({@code .a}/{@code .so}) land
+     * in {@code <prefix>/lib/<triple>}. The copy is offline and in-tree, matching the rest
+     * of the build — it does not touch {@code ~/.m2} or any system location.
+     */
+    private static int install(KavaFile project, Path projectDir, Options options)
+            throws IOException {
+        Overview overview = loadAll(project, projectDir);
+        if (options.module != null && project.module(options.module) == null) {
+            throw new UsageException("unknown module: " + options.module);
+        }
+        System.out.println(ENGINE);
+        System.out.println("project " + project.name()
+                + (project.version() == null ? "" : " " + project.version()));
+        Engine engine = new Engine(projectDir, project, overview.modules, overview.plugins,
+                options.module, options.withDeps, options.target, options.verbose,
+                options.jobs);
+        engine.build();
+
+        Path prefix = (options.to == null ? projectDir.resolve("dist") : options.to)
+                .toAbsolutePath().normalize();
+        Path bin = prefix.resolve("bin");
+        Path target = projectDir.resolve("target");
+        int staged = 0;
+
+        // Jar artifacts -> <prefix>/bin/<id>.jar
+        for (ModuleFile module : overview.modules.values()) {
+            if (options.module != null && !module.name().equals(options.module)) continue;
+            for (ModuleFile.Artifact artifact : module.artifacts()) {
+                boolean jarLike = artifact.type().equals("jar")
+                        || artifact.type().equals("uberjar");
+                if (!jarLike || artifact.tests()) continue;
+                Path jar = target.resolve(module.name()).resolve(artifact.id() + ".jar");
+                staged += stage(jar, bin.resolve(artifact.id() + ".jar"), projectDir);
+            }
+        }
+
+        // Native libraries -> <prefix>/lib/<triple>/<id>
+        for (var platform : project.platforms()) {
+            if (options.target != null && !options.target.equals(platform.id())) continue;
+            Path from = target.resolve(platform.id());
+            if (!Files.isDirectory(from)) continue;
+            Path libDir = prefix.resolve("lib").resolve(platform.id());
+            for (ModuleFile module : overview.modules.values()) {
+                if (options.module != null && !module.name().equals(options.module)) continue;
+                for (ModuleFile.Artifact artifact : module.artifacts()) {
+                    if (!artifact.type().equals("archive") && !artifact.type().equals("shared")) {
+                        continue;
+                    }
+                    staged += stage(from.resolve(artifact.id()),
+                            libDir.resolve(artifact.id()), projectDir);
+                }
+            }
+        }
+
+        // The compiler compiles the corelib from source at build time and reads a rule file
+        // at link time, so a relocatable prefix must also carry those. Stage the corelib
+        // source tree under <prefix>/corelib and the rule files under <prefix>/rules; the
+        // compiler's install-prefix discovery then needs no repository checkout.
+        if (options.module == null || "corelib".equals(options.module)) {
+            Path corelibSrc = corelibSourceDir(projectDir, overview.modules.get("corelib"));
+            if (corelibSrc != null && Files.isDirectory(corelibSrc)) {
+                staged += stageTree(corelibSrc, prefix.resolve("corelib"), projectDir);
+            }
+            Path rules = projectDir.resolve("rules");
+            if (Files.isDirectory(rules)) {
+                staged += stageTree(rules, prefix.resolve("rules"), projectDir);
+            }
+        }
+
+        if (staged == 0) {
+            System.out.println("mini-mvn: nothing to install (build the artifacts first)");
+        } else {
+            System.out.println("mini-mvn: installed " + staged + " artifact(s) to "
+                    + display(projectDir, prefix));
+        }
+        return 0;
+    }
+
+    private static void cleanDir(Path dir) throws IOException {
+        if (!Files.exists(dir)) return;
+        try (var walk = Files.walk(dir)) {
+            var paths = walk.sorted((a,b) -> b.getNameCount() - a.getNameCount()).toList();
+            for (Path p : paths) {
+                if (p.equals(dir)) continue;
+                try {
+                    Files.deleteIfExists(p);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private static String targetTriple(Path repoDir) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("uname", "-m");
+            pb.directory(repoDir.toFile());
+            Process p = pb.start();
+            String out = new String(p.getInputStream().readAllBytes()).trim();
+            if (p.waitFor() == 0) {
+                if (out.contains("aarch64") || out.contains("arm64")) return "aarch64-linux-gnu";
+            }
+        } catch (Exception ignored) {}
+        return "x86_64-linux-gnu";
+    }
+
+    private static Path findSystemLib(String name) {
+        String[] dirs = {
+                "/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu",
+                "/usr/lib64", "/lib64", "/usr/lib", "/lib"
+        };
+        for (String d : dirs) {
+            Path p = Path.of(d).resolve(name);
+            if (Files.exists(p)) return p;
+            Path dir = Path.of(d);
+            if (Files.isDirectory(dir)) {
+                try (var stream = Files.newDirectoryStream(dir, name.replace(".so", ".so*"))) {
+                    for (Path candidate : stream) {
+                        if (Files.isRegularFile(candidate)) return candidate;
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
+    /** The corelib module's first java source directory ({@code corelib/src}), or null. */
+    private static Path corelibSourceDir(Path projectDir, ModuleFile corelib) {
+        if (corelib == null) return null;
+        for (ModuleFile.SourceSet set : corelib.sources("java")) return set.dir();
+        return null;
+    }
+
+    /**
+     * Copy a whole directory tree into {@code to}, mirroring its structure. Returns 1 when
+     * at least one file was staged, 0 when the source held none. Used to stage the corelib
+     * source and the rule files into a relocatable install prefix.
+     */
+    private static int stageTree(Path from, Path to, Path projectDir) throws IOException {
+        int[] count = {0};
+        try (var walk = Files.walk(from)) {
+            for (Path src : (Iterable<Path>) walk::iterator) {
+                if (!Files.isRegularFile(src)) continue;
+                Path dest = to.resolve(from.relativize(src).toString());
+                Files.createDirectories(dest.getParent());
+                Files.copy(src, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+                count[0]++;
+            }
+        }
+        if (count[0] > 0) {
+            System.out.println("mini-mvn: installed " + display(projectDir, to) + "/ ("
+                    + count[0] + " files)");
+            return 1;
+        }
+        return 0;
+    }
+
+    /** Copy one artifact if it exists; returns 1 when staged, 0 when the source is missing. */
+    private static int stage(Path from, Path to, Path projectDir) throws IOException {
+        if (!Files.isRegularFile(from)) return 0;
+        Files.createDirectories(to.getParent());
+        Files.copy(from, to, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+        System.out.println("mini-mvn: installed " + display(projectDir, to));
+        return 1;
+    }
+
+    /** A path shown relative to the project when it lives inside it, absolute otherwise. */
+    private static String display(Path projectDir, Path path) {
+        Path abs = path.toAbsolutePath().normalize();
+        return abs.startsWith(projectDir) ? projectDir.relativize(abs).toString()
+                : abs.toString();
+    }
+
+    private static int test(KavaFile project, Path projectDir, Options options)
+            throws IOException {
+        Overview overview = loadAll(project, projectDir);
+        String wanted = options.suite;
+        if (wanted == null) {
+            var goal = project.goal("test");
+            wanted = goal != null && goal.suite() != null ? goal.suite() : "smoke";
+        }
+        List<SuiteHit> hits = new ArrayList<>();
+        for (ModuleFile module : overview.modules.values()) {
+            var suite = module.suite(wanted);
+            if (suite != null) hits.add(new SuiteHit(module, suite));
+        }
+        if (hits.isEmpty()) {
+            Set<String> names = new LinkedHashSet<>();
+            for (ModuleFile module : overview.modules.values()) {
+                for (var suite : module.suites()) names.add(suite.name());
+            }
+            throw new UsageException("no suite named '" + wanted + "'; known suites: "
+                    + join(new ArrayList<>(names)));
+        }
+        System.out.println(ENGINE + " test --suite " + wanted);
+
+        // Ensure modules needed for testing are built
+        Engine engine = new Engine(projectDir, project, overview.modules, overview.plugins,
+                null, true, options.target, options.verbose, options.jobs);
+        try {
+            engine.build();
+        } catch (Exception e) {
+            // continue if build has issues but classes might exist
+        }
+
+        for (SuiteHit hit : hits) {
+            runSuite(projectDir, hit, wanted, options.verbose);
+        }
+        return 0;
+    }
+
+    private static void runSuite(Path projectDir, SuiteHit hit,
+                                 String suiteName, boolean verbose) throws IOException {
+        ModuleFile module = hit.module;
+        Path target = projectDir.resolve("target").resolve(module.name());
+        Path classes = target.resolve("classes");
+        Path testClasses = target.resolve("test-classes");
+        if (!Files.isDirectory(classes) || !Files.isDirectory(testClasses)) {
+            throw new UsageException("compiler test classes not found; run 'mini-mvn build' first");
+        }
+
+        List<Path> cp = new ArrayList<>();
+        cp.add(testClasses);
+        cp.add(classes);
+        cp.addAll(moduleTestClasspath(projectDir, module));
+        String classpath = joinPaths(cp);
+
+        Path reports = projectDir.resolve("target/test-reports");
+        Files.createDirectories(reports);
+
+        List<String> classNames = collectSuiteClasses(testClasses, hit.suite);
+        if (classNames.isEmpty()) {
+            throw new UsageException("no test classes found for suite " + suiteName);
+        }
+
+        Path runner = projectDir.resolve("target/.mini-maven/JunitRun.java");
+        Files.createDirectories(runner.getParent());
+        StringBuilder runnerSrc = new StringBuilder();
+        runnerSrc.append("public class JunitRun {\n");
+        runnerSrc.append("  public static void main(String[] args) throws Exception {\n");
+        runnerSrc.append("    org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder builder = org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder.request();\n");
+        for (String cn : classNames) {
+            runnerSrc.append("    builder.selectors(org.junit.platform.engine.discovery.DiscoverySelectors.selectClass(\"" + cn + "\"));\n");
+        }
+        runnerSrc.append("    org.junit.platform.launcher.LauncherDiscoveryRequest request = builder.build();\n");
+        runnerSrc.append("    org.junit.platform.launcher.Launcher launcher = org.junit.platform.launcher.core.LauncherFactory.create();\n");
+        runnerSrc.append("    org.junit.platform.launcher.listeners.SummaryGeneratingListener listener = new org.junit.platform.launcher.listeners.SummaryGeneratingListener();\n");
+        runnerSrc.append("    launcher.registerTestExecutionListeners(listener);\n");
+        runnerSrc.append("    launcher.execute(request);\n");
+        runnerSrc.append("    org.junit.platform.launcher.listeners.TestExecutionSummary summary = listener.getSummary();\n");
+        runnerSrc.append("    summary.printTo(new java.io.PrintWriter(System.out));\n");
+        runnerSrc.append("    summary.printFailuresTo(new java.io.PrintWriter(System.out));\n");
+        runnerSrc.append("    System.exit(summary.getTestsFailedCount() > 0 ? 1 : 0);\n");
+        runnerSrc.append("  }\n");
+        runnerSrc.append("}\n");
+        Files.writeString(runner, runnerSrc.toString());
+
+        Path runnerClass = projectDir.resolve("target/.mini-maven/junit-run");
+        Files.createDirectories(runnerClass);
+        List<String> javacCmd = new ArrayList<>();
+        javacCmd.add(javaHome() + "/bin/javac");
+        javacCmd.add("--release");
+        javacCmd.add("17");
+        javacCmd.add("-cp");
+        javacCmd.add(classpath);
+        javacCmd.add("-d");
+        javacCmd.add(runnerClass.toString());
+        javacCmd.add(runner.toString());
+        mini.maven.engine.Exec.Result r1 = mini.maven.engine.Exec.run(javacCmd, projectDir, null, verbose);
+        if (!r1.ok()) throw new BuildException("failed to compile test runner:\n" + r1.output());
+
+        List<String> javaCmd = new ArrayList<>();
+        javaCmd.add(javaHome() + "/bin/java");
+        javaCmd.add("-cp");
+        javaCmd.add(runnerClass.toString() + java.io.File.pathSeparator + classpath);
+        javaCmd.add("-Dkava.root=" + projectDir);
+        javaCmd.add("-DMINI_CORELIB=" + projectDir.resolve("corelib"));
+        Path runtimeArchive = runtimeArchive(projectDir);
+        if (Files.isRegularFile(runtimeArchive)) {
+            javaCmd.add("-Dmini.runtime.archive=" + runtimeArchive);
+        }
+        javaCmd.add("JunitRun");
+        mini.maven.engine.Exec.Result r2 = mini.maven.engine.Exec.run(javaCmd, projectDir, null, true);
+        if (!r2.ok()) throw new BuildException("tests failed for suite " + suiteName);
+    }
+
+    private static List<String> collectSuiteClasses(Path testClasses, ModuleFile.Suite suite) throws IOException {
+        List<String> result = new ArrayList<>();
+        try (var walk = Files.walk(testClasses)) {
+            walk.filter(Files::isRegularFile)
+                .filter(p -> p.toString().endsWith(".class"))
+                .forEach(p -> {
+                    String rel = testClasses.relativize(p).toString();
+                    if (rel.contains("$")) return;
+                    String cn = rel.replace('/', '.').replace('\\', '.').replace(".class", "");
+                    if (suite.contains(cn)) result.add(cn);
+                });
+        }
+        result.sort(String::compareTo);
+        return result;
+    }
+
+    private static List<Path> moduleTestClasspath(Path projectDir, ModuleFile module) {
+        List<Path> cp = new ArrayList<>();
+        // Derive the spawn classpath from the module's declared dependencies so it tracks the
+        // vendored versions exactly — a hardcoded list silently drops a jar whose version
+        // drifts, leaving the spawned tests missing classes.
+        for (ModuleFile.Dependency dependency : module.dependencies()) {
+            if (dependency.isModule()) continue;
+            Path jar = vendored(projectDir, dependency);
+            if (Files.isRegularFile(jar)) cp.add(jar);
+        }
+        return cp;
+    }
+
+    private static Path runtimeArchive(Path projectDir) {
+        String triple = System.getProperty("os.arch").equals("aarch64") ? "aarch64-linux-gnu" : "x86_64-linux-gnu";
+        Path p = projectDir.resolve("target").resolve(triple).resolve("libkava.a");
+        if (Files.isRegularFile(p)) return p;
+        // try common
+        if (Files.isRegularFile(projectDir.resolve("target/aarch64-linux-gnu/libkava.a"))) return projectDir.resolve("target/aarch64-linux-gnu/libkava.a");
+        if (Files.isRegularFile(projectDir.resolve("target/x86_64-linux-gnu/libkava.a"))) return projectDir.resolve("target/x86_64-linux-gnu/libkava.a");
+        return p;
+    }
+
+    private static String javaHome() {
+        String jh = System.getenv("JAVA_HOME");
+        if (jh != null && !jh.isEmpty()) return jh;
+        String home = System.getProperty("mini.mvn.home");
+        if (home != null && !home.isBlank()) {
+            try {
+                ProcessBuilder pb = new ProcessBuilder("sh",
+                        Path.of(home).resolve("scripts").resolve("find-jdk17.sh").toString());
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                String line;
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(process.getInputStream()))) {
+                    line = reader.readLine();
+                }
+                if (process.waitFor() == 0 && line != null && !line.isBlank()) {
+                    return line.trim();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        String current = System.getProperty("java.home");
+        if (current != null && !current.isBlank()) return current;
+        throw new BuildException("no JDK 17+ found; export JAVA_HOME or install mini-mvn from "
+                + "https://github.com/krasgit/mini-mvn");
+    }
+
+    private static String joinPaths(List<Path> paths) {
+        return String.join(java.io.File.pathSeparator,
+                paths.stream().map(Path::toString).toList());
+    }
+
+    private static int doctor(KavaFile project, Path projectDir, Options options)
+            throws IOException {
+        Overview overview = loadAll(project, projectDir);
+        System.out.println(ENGINE + " doctor");
+        System.out.println("project root " + projectDir);
+        for (var platform : project.platforms()) {
+            System.out.println("platform " + platform.id() + " (" + platform.arch() + "/"
+                    + platform.os() + ")");
+        }
+        int problems = 0;
+        for (ModuleFile module : overview.modules.values()) {
+            for (var dependency : module.dependencies()) {
+                if (dependency.isModule()) {
+                    if (project.module(dependency.module()) == null) {
+                        System.out.println("MISSING module dependency "
+                                + module.name() + " -> " + dependency.module());
+                        problems++;
+                    }
+                    continue;
+                }
+                Path jar = vendored(projectDir, dependency);
+                if (!Files.isRegularFile(jar)) {
+                    System.out.println("MISSING jar " + dependency.coordinates()
+                            + " wanted at " + jar);
+                    problems++;
+                }
+            }
+        }
+        for (PluginFile plugin : overview.plugins.values()) {
+            for (var tool : plugin.tools()) {
+                String path = tool.path();
+                if (path.contains("${")) {
+                    System.out.println("tool " + plugin.name() + "/" + tool.name()
+                            + " = " + path + " (expanded at build time)");
+                } else if (looksLikePath(path)) {
+                    Path p = Path.of(path);
+                    boolean ok = Files.isExecutable(p);
+                    System.out.println((ok ? "tool " : "MISSING tool ") + plugin.name() + "/"
+                            + tool.name() + " = " + path);
+                    if (!ok) problems++;
+                } else {
+                    System.out.println("tool " + plugin.name() + "/" + tool.name()
+                            + " = " + path + (onPath(path) ? "" : " (not on PATH)"));
+                    if (!onPath(path)) problems++;
+                }
+            }
+        }
+        StateFile state = StateFile.loadOrEmpty(projectDir.resolve("target")
+                .resolve(".mini-maven").resolve("state.xml"), ENGINE);
+        System.out.println("state " + state.file() + " modules=" + state.modules().size());
+        System.out.println(problems == 0 ? "doctor: ok" : "doctor: " + problems + " problem(s)");
+        return problems == 0 ? 0 : 1;
+    }
+
+    private static int clean(KavaFile project, Path projectDir, Options options)
+            throws IOException {
+        List<Path> targets = List.of(
+                projectDir.resolve("target").resolve(".mini-maven"),
+                projectDir.resolve("target").resolve("compiler"),
+                projectDir.resolve("target").resolve("test-reports"),
+                projectDir.resolve("target").resolve("x86_64-linux-gnu"),
+                projectDir.resolve("target").resolve("aarch64-linux-gnu"),
+                projectDir.resolve("dist"));
+        for (Path target : targets) {
+            if (!Files.exists(target)) continue;
+            delete(target);
+            System.out.println("removed " + projectDir.relativize(target));
+        }
+        return 0;
+    }
+
+    private static void delete(Path path) throws IOException {
+        if (Files.isDirectory(path)) {
+            try (var entries = Files.list(path)) {
+                for (Path entry : entries.toList()) delete(entry);
+            }
+        }
+        Files.deleteIfExists(path);
+    }
+
+    private static Overview loadAll(KavaFile project, Path projectDir) {
+        var modules = new java.util.LinkedHashMap<String, ModuleFile>();
+        for (var ref : project.modules()) {
+            Path file = projectDir.resolve(ref.path()).resolve("module.xml").normalize();
+            if (!Files.isRegularFile(file)) {
+                throw new XmlException(file, "missing module descriptor for '" + ref.name() + "'");
+            }
+            ModuleFile module = ModuleFile.load(file);
+            if (!module.name().equals(ref.name())) {
+                throw new XmlException(file, "module name '" + module.name()
+                        + "' does not match kava.xml entry '" + ref.name() + "'");
+            }
+            modules.put(module.name(), module);
+        }
+        var plugins = new java.util.LinkedHashMap<String, PluginFile>();
+        for (var ref : project.plugins()) {
+            Path file = projectDir.resolve(ref.path()).resolve("plugin.xml").normalize();
+            if (!Files.isRegularFile(file)) {
+                throw new XmlException(file, "missing plugin descriptor for '" + ref.id() + "'");
+            }
+            PluginFile plugin = PluginFile.load(file);
+            if (!plugin.name().equals(ref.id())) {
+                throw new XmlException(file, "plugin name '" + plugin.name()
+                        + "' does not match kava.xml entry '" + ref.id() + "'");
+            }
+            plugins.put(plugin.name(), plugin);
+        }
+        return new Overview(modules, plugins);
+    }
+
+    private static Path vendored(Path projectDir, ModuleFile.Dependency dependency) {
+        return projectDir.resolve("third-party").resolve("repository")
+                .resolve(dependency.group().replace('.', '/'))
+                .resolve(dependency.artifact())
+                .resolve(dependency.version())
+                .resolve(dependency.artifact() + "-" + dependency.version() + ".jar");
+    }
+
+    private static boolean looksLikePath(String value) {
+        return value.contains("/") || value.startsWith(".");
+    }
+
+    private static boolean onPath(String tool) {
+        String path = System.getenv("PATH");
+        if (path == null) return false;
+        for (String dir : path.split(java.io.File.pathSeparator)) {
+            if (dir.isEmpty()) continue;
+            Path candidate = Path.of(dir).resolve(tool);
+            if (Files.isExecutable(candidate)) return true;
+        }
+        return false;
+    }
+
+    private static String join(List<String> values) {
+        return String.join(" ", values);
+    }
+
+    private static String usage() {
+        return """
+                mini-mvn %s - the mini-compiler build engine
+
+                usage:
+                  mini-mvn build [--module M] [--with-deps] [--target P] [--file kava.xml]
+                  mini-mvn install [--to DIR] [--module M] [--with-deps] [--target P] [--file kava.xml]
+                  mini-mvn test --suite smoke|unit|integration|full [--file kava.xml]
+                  mini-mvn run <project-dir> [--verbose] [-- args...]
+                  mini-mvn dist <project-dir> [--to DIR] [--verbose]
+                  mini-mvn doctor [--file kava.xml]
+                  mini-mvn clean [--file kava.xml]
+                  mini-mvn --help
+
+                options:
+                  --file <path>    project file (default: kava.xml)
+                  --to <dir>       install/output prefix (default: dist/ for install, <project-dir>/dist for dist)
+                  --module <name>  build one module
+                  --with-deps      build the selected module's dependencies first
+                  --target <id>    restrict work to one platform id
+                  --suite <name>   test suite to run
+                  --jobs <n>       parallel jobs (default: 1)
+                  --verbose        print each command before running it
+
+                run:
+                  Compiles the program described by <project-dir>/program.manifest to a
+                  native executable (building the toolchain first if needed) and runs it.
+                  Arguments after a bare -- are passed through to the program; the exit
+                  code is the program's own.
+                """.formatted(VERSION);
+    }
+
+    /**
+     * {@code mini-mvn dist <project-dir> [--to DIR] [--verbose]}: compile a manifest-based
+     * program and stage a relocatable distribution (binary + resources) to a directory.
+     */
+    private static int distProgram(String[] args) throws IOException {
+        String dirArg = null;
+        Path to = null;
+        boolean verbose = false;
+        String runtimeOverride = null;
+        for (int i = 1; i < args.length; i++) {
+            if (args[i].equals("--verbose") || args[i].equals("-v")) {
+                verbose = true;
+                continue;
+            } else if (args[i].equals("--to") && i + 1 < args.length) {
+                to = Path.of(args[i + 1]);
+                i++;
+                continue;
+            } else if (args[i].equals("--runtime") && i + 1 < args.length) {
+                runtimeOverride = args[i + 1];
+                i++;
+                continue;
+            } else if (!args[i].startsWith("-") && dirArg == null) {
+                dirArg = args[i];
+                continue;
+            } else {
+                throw new UsageException("dist takes a single project directory; unexpected '"
+                        + args[i] + "'");
+            }
+        }
+
+        Path programDir = Path.of(dirArg == null ? "." : dirArg).toAbsolutePath().normalize();
+        Path manifest = programDir.resolve("program.manifest");
+        if (!Files.isRegularFile(manifest)) {
+            throw new UsageException("no program.manifest in " + programDir
+                    + "\n  usage: mini-mvn dist <project-dir> [--to DIR] [--verbose]");
+        }
+
+        Map<String, String> keys = readManifestKeys(manifest);
+        String effectiveRuntime = runtimeOverride;
+        if (effectiveRuntime == null) {
+            effectiveRuntime = keys.getOrDefault("runtime", "static");
+        }
+        if (!effectiveRuntime.equals("static") && !effectiveRuntime.equals("dynamic")) {
+            throw new UsageException("invalid runtime: " + effectiveRuntime + " (expected static|dynamic)");
+        }
+
+        Path root = findKavaXml(programDir);
+        if (root == null) {
+            throw new UsageException("cannot find kava.xml above " + programDir
+                    + "\n  run from inside the mini-compiler repository");
+        }
+        Path repoDir = root.getParent();
+        KavaFile project = KavaFile.load(root);
+        Overview overview = loadAll(project, repoDir);
+        System.out.println(ENGINE + " dist " + display(repoDir, programDir));
+        Engine engine = new Engine(repoDir, project, overview.modules, overview.plugins,
+                null, true, null, verbose, 1);
+        engine.build();
+
+        Path compilerJar = repoDir.resolve("target/compiler/mini-compiler-all.jar");
+        if (!Files.isRegularFile(compilerJar)) {
+            throw new BuildException("compiler jar not found at " + compilerJar
+                    + " (build failed?)");
+        }
+        List<String> compile = new ArrayList<>();
+        compile.add(javaHome() + "/bin/java");
+        compile.add("-jar");
+        compile.add(compilerJar.toString());
+        compile.add("--manifest");
+        compile.add(manifest.toString());
+        compile.add("--emit=exe");
+        compile.add("--runtime");
+        compile.add(effectiveRuntime);
+        Path runtimeArchive = runtimeArchive(repoDir);
+        if (Files.isRegularFile(runtimeArchive)) {
+            compile.add("--runtime-lib");
+            compile.add(runtimeArchive.getParent().toString());
+        }
+        Map<String, String> env = new HashMap<>();
+        env.put("MINI_CORELIB", repoDir.resolve("corelib").toString());
+        mini.maven.engine.Exec.Result r = mini.maven.engine.Exec.run(compile, programDir, env, verbose);
+        if (!r.ok()) {
+            throw new BuildException("compiling " + display(repoDir, programDir)
+                    + " failed:\n" + r.output());
+        }
+
+        String mainClass = keys.get("main");
+        if (mainClass == null) {
+            throw new UsageException(manifest + ": no 'main:' key, cannot locate the binary");
+        }
+        String outDir = keys.getOrDefault("out", "out");
+        String simpleName = mainClass.contains(".")
+                ? mainClass.substring(mainClass.lastIndexOf('.') + 1) : mainClass;
+        Path binary = programDir.resolve(outDir).resolve(simpleName);
+        if (!Files.isRegularFile(binary)) {
+            throw new BuildException("expected a binary at " + binary + " but none was produced");
+        }
+
+        Path distDir = (to == null ? programDir.resolve("dist") : to).toAbsolutePath().normalize();
+        cleanDir(distDir);
+        Files.createDirectories(distDir);
+        Path distBinary = distDir.resolve(binary.getFileName());
+        Files.copy(binary, distBinary,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+        int copied = 1;
+
+        // Copy common resource files (certs, configs, html, etc.)
+        for (String name : new String[] {"cert.pem", "key.pem", "ca.pem", "server.pem",
+                "server.key", "config.json", "settings.json", "README.md", "run.sh", "start.sh"}) {
+            Path src = programDir.resolve(name);
+            if (Files.isRegularFile(src)) {
+                Files.copy(src, distDir.resolve(name),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+                copied++;
+            }
+        }
+        // Also copy any *.pem files in project dir
+        try (var stream = Files.list(programDir)) {
+            for (Path p : (Iterable<Path>) stream::iterator) {
+                String fn = p.getFileName().toString();
+                if (fn.endsWith(".pem") && Files.isRegularFile(p)) {
+                    Path dest = distDir.resolve(fn);
+                    if (!Files.exists(dest)) {
+                        Files.copy(p, dest,
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                                java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+                        copied++;
+                    }
+                }
+            }
+        }
+
+        // Bundle libraries
+        try {
+            if (effectiveRuntime.equals("dynamic")) {
+                // With dynamic mini runtime we bundle OpenSSL for portability
+                String[] libs = {"libssl.so.3", "libcrypto.so.3", "libssl.so", "libcrypto.so"};
+                for (String lib : libs) {
+                    Path src = findSystemLib(lib);
+                    if (src != null && Files.isRegularFile(src)) {
+                        Path dest = distDir.resolve(src.getFileName());
+                        if (!Files.exists(dest)) {
+                            Files.copy(src, dest,
+                                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                                    java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+                            copied++;
+                        }
+                    }
+                }
+                // Bundle mini runtime
+                for (String lib : new String[] {"libkava.so", "libmini_runtime.so"}) {
+                    Path src = repoDir.resolve("target").resolve(targetTriple(repoDir)).resolve(lib);
+                    if (!Files.exists(src)) {
+                        src = repoDir.resolve("target").resolve("x86_64-linux-gnu").resolve(lib);
+                    }
+                    if (!Files.exists(src)) {
+                        src = repoDir.resolve("target").resolve("aarch64-linux-gnu").resolve(lib);
+                    }
+                    if (src != null && Files.exists(src)) {
+                        Path dest = distDir.resolve(src.getFileName());
+                        if (!Files.exists(dest)) {
+                            Files.copy(src, dest,
+                                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                                    java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+                            copied++;
+                        }
+                        break;
+                    }
+                }
+            } else {
+                // static mini runtime - do not bundle libkava or OpenSSL by default
+            }
+            // Try to patch rpath with patchelf if available
+            try {
+                ProcessBuilder pb = new ProcessBuilder("patchelf", "--set-rpath", "$ORIGIN", distBinary.toString());
+                pb.redirectErrorStream(true);
+                Process p = pb.start();
+                p.getInputStream().readAllBytes();
+                p.waitFor();
+            } catch (Exception ignored) {
+            }
+        } catch (Exception ignored) {
+        }
+
+        Path runSh = distDir.resolve("run.sh");
+        String runScript = "#!/bin/sh\ncd \"$(dirname \"$0\")\"\nexport LD_LIBRARY_PATH=\".:$LD_LIBRARY_PATH\"\n./" + binary.getFileName() + " \"$@\"\n";
+        Files.writeString(runSh, runScript);
+        try { runSh.toFile().setExecutable(true, false); } catch (Exception ignored) {}
+        copied++;
+
+        System.out.println(ENGINE + ": packaged " + copied + " file(s) to "
+                + display(repoDir, distDir));
+        return 0;
+    }
+
+    private record Overview(java.util.Map<String, ModuleFile> modules,
+                            java.util.Map<String, PluginFile> plugins) {
+    }
+
+    private record SuiteHit(ModuleFile module, ModuleFile.Suite suite) {
+    }
+
+    static final class Options {
+        Path file;
+        Path to;
+        String module;
+        String target;
+        String suite;
+        boolean withDeps;
+        boolean verbose;
+        int jobs = 1;
+
+        static Options parse(String[] args, int from) {
+            Options options = new Options();
+            for (int i = from; i < args.length; i++) {
+                String arg = args[i];
+                switch (arg) {
+                    case "--file", "-f" -> options.file = Path.of(value(args, ++i, arg));
+                    case "--to" -> options.to = Path.of(value(args, ++i, arg));
+                    case "--module", "-m" -> options.module = value(args, ++i, arg);
+                    case "--target", "-t" -> options.target = value(args, ++i, arg);
+                    case "--suite", "-s" -> options.suite = value(args, ++i, arg);
+                    case "--with-deps" -> options.withDeps = true;
+                    case "--verbose", "-v" -> options.verbose = true;
+                    case "--jobs", "-j" -> options.jobs = number(value(args, ++i, arg));
+                    default -> throw new UsageException("unknown option: " + arg);
+                }
+            }
+            if (options.jobs < 1) throw new UsageException("--jobs must be at least 1");
+            return options;
+        }
+
+        private static String value(String[] args, int index, String option) {
+            if (index >= args.length) throw new UsageException(option + " requires a value");
+            return args[index];
+        }
+
+        private static int number(String value) {
+            try {
+                return Integer.parseInt(value);
+            } catch (NumberFormatException e) {
+                throw new UsageException("expected a number, got '" + value + "'");
+            }
+        }
+    }
+
+    static final class UsageException extends RuntimeException {
+        UsageException(String message) {
+            super(message);
+        }
+    }
+}

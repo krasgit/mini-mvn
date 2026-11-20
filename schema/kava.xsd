@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:mini:maven:kava"
+           xmlns="urn:mini:maven:kava"
+           elementFormDefault="qualified">
+
+  <xs:element name="project">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="version" type="xs:string" minOccurs="0"/>
+        <xs:element name="platforms" type="platforms"/>
+        <xs:element name="modules" type="modules"/>
+        <xs:element name="plugins" type="plugins"/>
+        <xs:element name="bindings" type="bindings" minOccurs="0"/>
+        <xs:element name="goals" type="goals" minOccurs="0"/>
+      </xs:sequence>
+      <xs:attribute name="format" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:complexType name="platforms">
+    <xs:sequence>
+      <xs:element name="platform" minOccurs="1" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="id" type="xs:string" use="required"/>
+          <xs:attribute name="arch" type="xs:string" use="required"/>
+          <xs:attribute name="os" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="modules">
+    <xs:sequence>
+      <xs:element name="module" minOccurs="1" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="name" type="xs:string" use="required"/>
+          <xs:attribute name="path" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="plugins">
+    <xs:sequence>
+      <xs:element name="plugin" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="id" type="xs:string" use="required"/>
+          <xs:attribute name="path" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="bindings">
+    <xs:sequence>
+      <xs:element name="binding" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="module" type="xs:string"/>
+          <xs:attribute name="sources" type="xs:string"/>
+          <xs:attribute name="artifact" type="xs:string"/>
+          <xs:attribute name="plugin" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="goals">
+    <xs:sequence>
+      <xs:element name="goal" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="name" type="xs:string" use="required"/>
+          <xs:attribute name="plugin" type="xs:string"/>
+          <xs:attribute name="suite" type="xs:string"/>
+          <xs:attribute name="default" type="xs:boolean" default="false"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+</xs:schema>

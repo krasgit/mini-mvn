@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:mini:maven:module"
+           xmlns="urn:mini:maven:module"
+           elementFormDefault="qualified">
+
+  <xs:element name="module">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="sources" type="sources" minOccurs="0"/>
+        <xs:element name="resources" type="resources" minOccurs="0"/>
+        <xs:element name="testSources" type="sources" minOccurs="0"/>
+        <xs:element name="testResources" type="resources" minOccurs="0"/>
+        <xs:element name="compile" type="compile" minOccurs="0"/>
+        <xs:element name="dependencies" type="dependencies" minOccurs="0"/>
+        <xs:element name="artifacts" type="artifacts" minOccurs="0"/>
+        <xs:element name="tests" type="tests" minOccurs="0"/>
+      </xs:sequence>
+      <xs:attribute name="name" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:complexType name="sources">
+    <xs:sequence>
+      <xs:element name="source" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="language" type="xs:string" use="required"/>
+          <xs:attribute name="dir" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="resources">
+    <xs:sequence>
+      <xs:element name="resource" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="dir" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="compile">
+    <xs:sequence>
+      <xs:element name="include" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="dir" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="define" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="name" type="xs:string" use="required"/>
+          <xs:attribute name="value" type="xs:string" default="1"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="dependencies">
+    <xs:sequence>
+      <xs:element name="dependency" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="module" type="xs:string"/>
+          <xs:attribute name="group" type="xs:string"/>
+          <xs:attribute name="artifact" type="xs:string"/>
+          <xs:attribute name="version" type="xs:string"/>
+          <xs:attribute name="scope" type="xs:string" default="compile"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="artifacts">
+    <xs:sequence>
+      <xs:element name="artifact" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="id" type="xs:string" use="required"/>
+          <xs:attribute name="type" type="xs:string" use="required"/>
+          <xs:attribute name="mainClass" type="xs:string"/>
+          <xs:attribute name="tests" type="xs:boolean" default="false"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="tests">
+    <xs:sequence>
+      <xs:element name="suite" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="include" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <xs:attribute name="class" type="xs:string"/>
+                <xs:attribute name="package" type="xs:string"/>
+              </xs:complexType>
+            </xs:element>
+            <xs:element name="exclude" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <xs:attribute name="class" type="xs:string"/>
+                <xs:attribute name="package" type="xs:string"/>
+              </xs:complexType>
+            </xs:element>
+          </xs:sequence>
+          <xs:attribute name="name" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+</xs:schema>

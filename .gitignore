@@ -1,0 +1,7 @@
+target/
+dist/
+out/
+*.class
+*.o
+*.so
+*.a

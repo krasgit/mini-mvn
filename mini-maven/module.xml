@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module xmlns="urn:mini:maven:module" name="mini-maven">
+  <sources>
+    <source language="java" dir="src/main/java"/>
+  </sources>
+  <testSources>
+    <source language="java" dir="src/test/java"/>
+  </testSources>
+
+  <dependencies>
+    <dependency group="org.junit.platform" artifact="junit-platform-launcher" version="1.10.2" scope="test"/>
+    <dependency group="org.junit.platform" artifact="junit-platform-engine" version="1.10.2" scope="test"/>
+    <dependency group="org.junit.platform" artifact="junit-platform-commons" version="1.10.2" scope="test"/>
+    <dependency group="org.junit.jupiter" artifact="junit-jupiter-engine" version="5.10.2" scope="test"/>
+    <dependency group="org.junit.jupiter" artifact="junit-jupiter-api" version="5.10.2" scope="test"/>
+    <dependency group="org.opentest4j" artifact="opentest4j" version="1.3.0" scope="test"/>
+    <dependency group="org.apiguardian" artifact="apiguardian-api" version="1.1.2" scope="test"/>
+  </dependencies>
+
+  <artifacts>
+    <artifact id="mini-mvn" type="jar" mainClass="mini.maven.Main"/>
+  </artifacts>
+
+  <tests>
+    <suite name="smoke">
+      <include class="mini.maven.XmlTest"/>
+    </suite>
+    <suite name="full">
+      <include package="mini.maven"/>
+    </suite>
+  </tests>
+</module>

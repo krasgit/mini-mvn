@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:mini:maven:state"
+           xmlns="urn:mini:maven:state"
+           elementFormDefault="qualified">
+
+  <xs:element name="state">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="module" type="module" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="format" type="xs:string" use="required"/>
+      <xs:attribute name="engine" type="xs:string" use="required"/>
+      <xs:attribute name="generated" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:complexType name="module">
+    <xs:sequence>
+      <xs:element name="node" type="node" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="name" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="node">
+    <xs:sequence>
+      <xs:element name="input" type="file" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="output" type="file" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+    <xs:attribute name="key" type="xs:string" use="required"/>
+    <xs:attribute name="tool" type="xs:string"/>
+  </xs:complexType>
+
+  <xs:complexType name="file">
+    <xs:attribute name="path" type="xs:string" use="required"/>
+    <xs:attribute name="sha256" type="xs:string" use="required"/>
+    <xs:attribute name="size" type="xs:long" use="required"/>
+    <xs:attribute name="mtime" type="xs:long" use="required"/>
+  </xs:complexType>
+
+</xs:schema>

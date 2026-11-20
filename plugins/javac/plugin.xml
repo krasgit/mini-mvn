@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin xmlns="urn:mini:maven:plugin" name="javac" provides="java-compile">
+  <implementation class="mini.maven.plugins.JavacPlugin"/>
+  <tools>
+    <tool name="javac" path="${java.home}/bin/javac" versionArg="-version"/>
+  </tools>
+  <settings>
+    <setting name="release" value="17"/>
+    <setting name="encoding" value="UTF-8"/>
+  </settings>
+  <args>
+    <arg value="-g"/>
+  </args>
+  <cache scope="module-sources"/>
+</plugin>

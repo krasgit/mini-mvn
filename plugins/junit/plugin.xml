@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin xmlns="urn:mini:maven:plugin" name="junit" provides="test-runner">
+  <implementation class="mini.maven.plugins.JunitPlugin"/>
+  <tools>
+    <tool name="java" path="${java.home}/bin/java" versionArg="-version"/>
+  </tools>
+  <settings>
+    <setting name="launcher" value="org.junit.platform.launcher.core.LauncherFactory"/>
+    <setting name="reports" value="target/test-reports"/>
+  </settings>
+  <cache scope="test-classes"/>
+</plugin>
