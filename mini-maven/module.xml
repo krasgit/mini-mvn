@@ -24,6 +24,7 @@
   <tests>
     <suite name="smoke">
       <include class="mini.maven.XmlTest"/>
+      <include class="mini.maven.RioTest"/>
     </suite>
     <suite name="full">
       <include package="mini.maven"/>

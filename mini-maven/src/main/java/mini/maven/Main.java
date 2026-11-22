@@ -3,8 +3,10 @@ package mini.maven;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -14,9 +16,14 @@ import java.util.Set;
 
 import mini.maven.engine.BuildException;
 import mini.maven.engine.Engine;
+import mini.maven.engine.Exec;
+import mini.maven.engine.HashManifest;
+import mini.maven.engine.PomWriter;
+import mini.maven.engine.RemoteResolver;
 import mini.maven.model.KavaFile;
 import mini.maven.model.ModuleFile;
 import mini.maven.model.PluginFile;
+import mini.maven.model.RioFile;
 import mini.maven.model.StateFile;
 import mini.maven.xml.XmlException;
 
@@ -56,10 +63,19 @@ public final class Main {
 
         String command = args[0];
         if (command.equals("run")) {
-            return runProgram(args);
+            return runCommand(args);
         }
         if (command.equals("dist")) {
             return distProgram(args);
+        }
+        if (command.equals("verify")) {
+            return verifyCommand(args);
+        }
+        if (command.equals("dependencies")) {
+            return dependenciesCommand(args);
+        }
+        if (command.equals("publish")) {
+            return publishCommand(args);
         }
         Options options = Options.parse(args, 1);
         Path root = options.file == null ? Path.of("kava.xml") : options.file;
@@ -202,6 +218,222 @@ public final class Main {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("interrupted while running " + binary, e);
+        }
+    }
+
+    private static int runCommand(String[] args) throws IOException {
+        RunOptions options = RunOptions.parse(args);
+        if (options.file != null) {
+            if (options.file.endsWith("kava.xml")) return runProgram(args);
+            return runRio(options);
+        }
+        if (options.spec == null) {
+            return runProgram(args);
+        }
+        Path local = Path.of(options.spec);
+        if (local.isAbsolute() || options.spec.startsWith(".") || Files.isDirectory(local)) {
+            return runProgram(args);
+        }
+        return runRio(options);
+    }
+
+    private static int runRio(RunOptions options) throws IOException {
+        String spec = options.ref == null ? options.spec : options.spec + "@" + options.ref;
+        RioProject project = loadRioProject(spec,
+                options.file == null ? null : Path.of(options.file), options.verbose);
+        RioFile rio = project.descriptor();
+        Path projectDir = project.dir();
+        String repository = project.repository();
+
+        RioFile.Resolution resolution;
+        try {
+            resolution = rio.resolve(options.platform, options.profile);
+        } catch (IllegalArgumentException e) {
+            throw new UsageException(e.getMessage());
+        }
+        String platform = options.platform == null ? rio.defaultPlatform() : options.platform;
+        String profile = options.profile == null ? "default" : options.profile;
+        System.out.println(ENGINE + " run " + repository);
+        System.out.println("platform " + platform + " profile " + profile
+                + " runtime " + resolution.runtime());
+
+        Map<String, String> env = new HashMap<>();
+        env.put("JAVA_HOME", javaHome());
+        for (RioFile.Dependency dependency : rio.dependencies()) {
+            if (dependency.kind().equals("engine")) {
+                System.out.println("dependency engine " + dependency.repository()
+                        + " (" + dependency.ref() + ")");
+                continue;
+            }
+            if (!dependency.kind().equals("kava-dist")) continue;
+            if (resolution.runtime().equals("java")) {
+                System.out.println("dependency kava-dist " + dependency.repository()
+                        + " (" + dependency.ref() + ") skipped for java runtime");
+                continue;
+            }
+            RemoteResolver.Resolved tool = RemoteResolver.resolveSource(
+                    dependency.repository() + "@" + dependency.ref(), options.verbose);
+            Path prefix = prefixFor(tool);
+            ensureKavaDist(tool, prefix, env, options.verbose);
+            System.out.println("dependency kava-dist " + tool.repository()
+                    + "@" + tool.sha() + " -> " + prefix);
+        }
+
+        String port = options.port == null ? rio.run().port() : options.port;
+        String workspaceValue = options.workspace == null
+                ? rio.run().workspace() : options.workspace;
+        Path workspace = Path.of(workspaceValue);
+        if (!workspace.isAbsolute()) workspace = projectDir.resolve(workspace).normalize();
+
+        if (resolution.runtime().equals("java")) {
+            Exec.Result build = Exec.run(List.of("bash", "build.sh"), projectDir, env,
+                    options.verbose);
+            if (!build.ok()) {
+                throw new BuildException("building " + repository + " failed:\n" + build.output());
+            }
+        } else {
+            String prefix = env.get("KAVA_HOME");
+            if (prefix == null) {
+                throw new BuildException("native profile needs a kava-dist dependency in rio.xml");
+            }
+            env.put("GC", resolution.gc());
+            List<String> build = new ArrayList<>();
+            build.add("sh");
+            build.add("./mini-rio");
+            build.add("build");
+            build.add("--prefix");
+            build.add(prefix);
+            build.add("--target");
+            build.add(resolution.target());
+            if (resolution.staticLink()) build.add("--static");
+            if (resolution.cc() != null) {
+                build.add("--cc");
+                build.add(resolution.cc());
+            }
+            Exec.Result result = Exec.run(build, projectDir, env, options.verbose);
+            if (!result.ok()) {
+                throw new BuildException("building native " + repository
+                        + " failed:\n" + result.output());
+            }
+        }
+
+        verifyDeclaredArtifacts(rio, projectDir);
+        writeRuntimeManifest(projectDir);
+
+        List<String> command = new ArrayList<>();
+        Path nativeLauncher = null;
+        if (resolution.runtime().equals("native")) {
+            Path binary = projectDir.resolve("out").resolve("rio-server");
+            if (!Files.isRegularFile(binary)) {
+                throw new BuildException("native binary not found at " + binary);
+            }
+            nativeLauncher = Files.createTempDirectory("mini-mvn-rio-").resolve("rio-server");
+            Files.copy(binary, nativeLauncher, StandardCopyOption.REPLACE_EXISTING);
+            if (!nativeLauncher.toFile().setExecutable(true)) {
+                throw new IOException("cannot make native launcher executable: " + nativeLauncher);
+            }
+        }
+        if (resolution.runtime().equals("java")) {
+            command.add(Path.of(javaHome()).resolve("bin").resolve("java").toString());
+            command.add("-cp");
+            command.add("out");
+            command.add(rio.run().main());
+            command.add(port);
+            command.add(rio.run().browser());
+            command.add(workspace.toString());
+            command.add(System.getenv("RIO_PASSCODE") == null ? "" : System.getenv("RIO_PASSCODE"));
+            command.add(System.getenv("RIO_WS_LOG") == null ? "rio-ws.log"
+                    : System.getenv("RIO_WS_LOG"));
+        } else {
+            command.add(nativeLauncher.toString());
+            command.add("--");
+            command.add(port);
+            command.add(rio.run().browser());
+            command.add(workspace.toString());
+            command.add("");
+            command.add(System.getenv("RIO_WS_LOG") == null ? "rio-ws.log"
+                    : System.getenv("RIO_WS_LOG"));
+        }
+        System.out.println(ENGINE + ": running " + repository + " on port " + port);
+        ProcessBuilder builder = new ProcessBuilder(command).inheritIO().directory(projectDir.toFile());
+        builder.environment().putAll(env);
+        try {
+            return builder.start().waitFor();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted while running " + repository, e);
+        } finally {
+            if (nativeLauncher != null) {
+                Files.deleteIfExists(nativeLauncher);
+                Files.deleteIfExists(nativeLauncher.getParent());
+            }
+        }
+    }
+
+    private static Path prefixFor(RemoteResolver.Resolved tool) {
+        return RemoteResolver.cacheRoot().resolve("kava").resolve(tool.sha());
+    }
+
+    private static void ensureKavaDist(RemoteResolver.Resolved tool, Path prefix,
+                                       Map<String, String> env, boolean verbose)
+            throws IOException {
+        Path marker = prefix.resolve(".mini-mvn-install");
+        if (Files.isRegularFile(marker)
+                && markerBuildMatches(marker, tool.sha())
+                && Files.isRegularFile(prefix.resolve("bin").resolve("mini-compiler-all.jar"))) {
+            env.put("KAVA_HOME", prefix.toString());
+            env.put("MINI_HOME", prefix.toString());
+            env.put("MINI_CORELIB", prefix.resolve("corelib").toString());
+            return;
+        }
+        Path launcher = Path.of(System.getProperty("mini.mvn.home", "."))
+                .toAbsolutePath().normalize().resolve("mini-mvn");
+        if (!Files.isRegularFile(launcher)) {
+            throw new BuildException("mini-mvn launcher not found at " + launcher);
+        }
+        Exec.Result result = Exec.run(List.of("sh", launcher.toString(), "install",
+                "--to", prefix.toString()), tool.dir(), env, verbose);
+        if (!result.ok()) {
+            throw new BuildException("installing kava-dist failed:\n" + result.output());
+        }
+        Files.createDirectories(prefix);
+        Files.writeString(marker, tool.sha(), StandardCharsets.UTF_8);
+        env.put("KAVA_HOME", prefix.toString());
+        env.put("MINI_HOME", prefix.toString());
+        env.put("MINI_CORELIB", prefix.resolve("corelib").toString());
+    }
+
+    private static boolean markerBuildMatches(Path marker, String sha) throws IOException {
+        return Files.readString(marker, StandardCharsets.UTF_8).trim().equals(sha);
+    }
+
+    private static void verifyDeclaredArtifacts(RioFile rio, Path projectDir) throws IOException {
+        for (RioFile.Artifact artifact : rio.artifacts()) {
+            if (artifact.sha256() == null) continue;
+            Path file = projectDir.resolve(artifact.path());
+            if (!Files.isRegularFile(file)) {
+                throw new BuildException("declared artifact is missing: " + artifact.path());
+            }
+            String actual = mini.maven.engine.Hashing.sha256(file);
+            if (!actual.equals(artifact.sha256())) {
+                throw new BuildException("hash mismatch for " + artifact.path()
+                        + ": expected " + artifact.sha256() + ", got " + actual);
+            }
+        }
+    }
+
+    private static void writeRuntimeManifest(Path projectDir) throws IOException {
+        List<Path> files = new ArrayList<>();
+        addFiles(projectDir.resolve("out"), files);
+        addFiles(projectDir.resolve("rio-browser"), files);
+        HashManifest.write(projectDir, files, projectDir.resolve("target")
+                .resolve(".mini-maven").resolve("artifacts.sha256"));
+    }
+
+    private static void addFiles(Path root, List<Path> files) throws IOException {
+        if (!Files.isDirectory(root)) return;
+        try (var walk = Files.walk(root)) {
+            walk.filter(Files::isRegularFile).sorted().forEach(files::add);
         }
     }
 
@@ -616,6 +848,7 @@ public final class Main {
         Overview overview = loadAll(project, projectDir);
         System.out.println(ENGINE + " doctor");
         System.out.println("project root " + projectDir);
+        System.out.println("jdk " + javaHome());
         for (var platform : project.platforms()) {
             System.out.println("platform " + platform.id() + " (" + platform.arch() + "/"
                     + platform.os() + ")");
@@ -636,6 +869,20 @@ public final class Main {
                     System.out.println("MISSING jar " + dependency.coordinates()
                             + " wanted at " + jar);
                     problems++;
+                    continue;
+                }
+                Path sidecar = Path.of(jar + ".sha256");
+                if (!Files.isRegularFile(sidecar)) {
+                    System.out.println("MISSING checksum " + sidecar);
+                    problems++;
+                } else {
+                    String expected = Files.readString(sidecar, StandardCharsets.UTF_8).trim()
+                            .split("\\s+")[0];
+                    String actual = mini.maven.engine.Hashing.sha256(jar);
+                    if (!expected.equals(actual)) {
+                        System.out.println("BAD checksum " + jar);
+                        problems++;
+                    }
                 }
             }
         }
@@ -748,6 +995,196 @@ public final class Main {
         return String.join(" ", values);
     }
 
+    private static RioProject loadRioProject(String spec, Path file, boolean verbose)
+            throws IOException {
+        if (file != null) {
+            Path descriptor = file.toAbsolutePath().normalize();
+            RioFile rio = RioFile.load(descriptor);
+            return new RioProject(descriptor.getParent(), rio, "local:" + descriptor);
+        }
+        RemoteResolver.Resolved resolved = RemoteResolver.resolve(spec, verbose);
+        return new RioProject(resolved.dir(), resolved.descriptor(),
+                resolved.repository() + "@" + resolved.sha());
+    }
+
+    private static int verifyCommand(String[] args) throws IOException {
+        Path file = null;
+        Path baseline = null;
+        Path compare = null;
+        boolean verbose = false;
+        for (int i = 1; i < args.length; i++) {
+            switch (args[i]) {
+                case "--file", "-f" -> file = Path.of(Options.value(args, ++i, args[i - 1]));
+                case "--baseline" -> baseline = Path.of(Options.value(args, ++i, args[i - 1]));
+                case "--compare" -> compare = Path.of(Options.value(args, ++i, args[i - 1]));
+                case "--verbose", "-v" -> verbose = true;
+                default -> throw new UsageException("unknown option: " + args[i]);
+            }
+        }
+        if (baseline != null || compare != null) {
+            if (baseline == null || compare == null) {
+                throw new UsageException("--baseline and --compare must be given together");
+            }
+            StringBuilder report = new StringBuilder();
+            boolean same = HashManifest.compare(baseline, compare, report);
+            System.out.print(report);
+            System.out.println(same ? "verify: identical" : "verify: different");
+            return same ? 0 : 1;
+        }
+
+        Path descriptor = file == null ? Path.of("kava.xml") : file;
+        Path projectDir = descriptor.toAbsolutePath().getParent();
+        if (descriptor.getFileName().toString().endsWith("rio.xml")) {
+            RioProject rio = loadRioProject(null, descriptor, verbose);
+            writeRuntimeManifest(rio.dir());
+            System.out.println("verify: wrote " + display(rio.dir(), rio.dir()
+                    .resolve("target/.mini-maven/artifacts.sha256")));
+            return 0;
+        }
+
+        KavaFile project = KavaFile.load(descriptor.toAbsolutePath().normalize());
+        Options options = new Options();
+        options.verbose = verbose;
+        int checked = doctor(project, projectDir, options);
+        if (checked != 0) return checked;
+        build(project, projectDir, options);
+        test(project, projectDir, options);
+        List<Path> artifacts = new ArrayList<>();
+        Path target = projectDir.resolve("target");
+        Path state = target.resolve(".mini-maven");
+        if (Files.isDirectory(target)) {
+            try (var walk = Files.walk(target)) {
+                walk.filter(Files::isRegularFile)
+                        .filter(path -> !path.startsWith(state))
+                        .sorted()
+                        .forEach(artifacts::add);
+            }
+        }
+        Path manifest = HashManifest.write(projectDir, artifacts,
+                state.resolve("artifacts.sha256"));
+        System.out.println("verify: wrote " + display(projectDir, manifest));
+        return 0;
+    }
+
+    private static int dependenciesCommand(String[] args) throws IOException {
+        String spec = null;
+        Path file = null;
+        boolean tree = false;
+        boolean verbose = false;
+        for (int i = 1; i < args.length; i++) {
+            switch (args[i]) {
+                case "--tree" -> tree = true;
+                case "--file", "-f" -> file = Path.of(Options.value(args, ++i, args[i - 1]));
+                case "--verbose", "-v" -> verbose = true;
+                default -> {
+                    if (args[i].startsWith("-")) throw new UsageException("unknown option: " + args[i]);
+                    spec = args[i];
+                }
+            }
+        }
+        if (!tree) throw new UsageException("dependencies currently requires --tree");
+        Path descriptor = file == null ? Path.of("kava.xml") : file;
+        if (spec != null || descriptor.getFileName().toString().endsWith("rio.xml")) {
+            RioProject rio = loadRioProject(spec, spec == null ? descriptor : null, verbose);
+            System.out.println(rio.descriptor().name() + " " + rio.repository());
+            for (RioFile.Platform platform : rio.descriptor().platforms()) {
+                System.out.println("  +- platform " + platform.name() + " ("
+                        + platform.runtime() + (platform.target() == null ? ""
+                                : ", " + platform.target()) + ")");
+            }
+            for (RioFile.Dependency dependency : rio.descriptor().dependencies()) {
+                System.out.println("  +- " + dependency.name() + " [" + dependency.kind()
+                        + "] " + dependency.repository() + "@" + dependency.ref());
+            }
+            return 0;
+        }
+
+        Path root = descriptor.toAbsolutePath().normalize();
+        KavaFile project = KavaFile.load(root);
+        Overview overview = loadAll(project, root.getParent());
+        System.out.println(project.name() + (project.version() == null
+                ? "" : " " + project.version()));
+        for (var module : project.modules()) {
+            printModuleTree(module.name(), overview, new LinkedHashSet<>(), "  ");
+        }
+        return 0;
+    }
+
+    private static void printModuleTree(String name, Overview overview, Set<String> visiting,
+                                        String prefix) {
+        String marker = visiting.contains(name) ? " (cycle)" : "";
+        System.out.println(prefix + "+- " + name + marker);
+        if (!visiting.add(name)) return;
+        ModuleFile module = overview.modules().get(name);
+        if (module != null) {
+            for (ModuleFile.Dependency dependency : module.dependencies()) {
+                if (dependency.isModule()) {
+                    printModuleTree(dependency.module(), overview, visiting, prefix + "   ");
+                } else {
+                    System.out.println(prefix + "   +- " + dependency.coordinates()
+                            + " [" + dependency.scope() + "]");
+                }
+            }
+        }
+        visiting.remove(name);
+    }
+
+    private static int publishCommand(String[] args) throws IOException {
+        String spec = null;
+        Path file = null;
+        Path to = null;
+        boolean verbose = false;
+        for (int i = 1; i < args.length; i++) {
+            switch (args[i]) {
+                case "--to" -> to = Path.of(Options.value(args, ++i, args[i - 1]));
+                case "--file", "-f" -> file = Path.of(Options.value(args, ++i, args[i - 1]));
+                case "--verbose", "-v" -> verbose = true;
+                default -> {
+                    if (args[i].startsWith("-")) throw new UsageException("unknown option: " + args[i]);
+                    spec = args[i];
+                }
+            }
+        }
+        Path descriptor = file == null ? Path.of("kava.xml") : file;
+        Path projectDir = descriptor.toAbsolutePath().getParent();
+        Path destination = to == null ? projectDir.resolve("dist").resolve("publish")
+                : to.toAbsolutePath().normalize();
+        if (spec != null || descriptor.getFileName().toString().endsWith("rio.xml")) {
+            RioProject rio = loadRioProject(spec, spec == null ? descriptor : null, verbose);
+            for (RioFile.Artifact artifact : rio.descriptor().artifacts()) {
+                Path source = rio.dir().resolve(artifact.path());
+                Path target = destination.resolve(artifact.id());
+                if (Files.isDirectory(source)) stageTree(source, target, rio.dir());
+                else stage(source, target, rio.dir());
+            }
+            PomWriter.write(destination.resolve(rio.descriptor().name() + ".pom"),
+                    "mini", rio.descriptor().name(), "0.1");
+        } else {
+            KavaFile project = KavaFile.load(descriptor.toAbsolutePath().normalize());
+            Options options = new Options();
+            options.to = destination;
+            options.verbose = verbose;
+            install(project, projectDir, options);
+            PomWriter.write(destination.resolve(project.name() + ".pom"),
+                    "mini", project.name(), project.version() == null ? "0.1" : project.version());
+        }
+        List<Path> staged = new ArrayList<>();
+        addFiles(destination, staged);
+        for (Path path : staged) {
+            if (path.getFileName().toString().endsWith(".sha256")) continue;
+            Path sidecar = Path.of(path + ".sha256");
+            Files.writeString(sidecar, mini.maven.engine.Hashing.sha256(path)
+                    + "  " + destination.relativize(path).toString().replace('\\', '/') + "\n",
+                    StandardCharsets.UTF_8);
+        }
+        addFiles(destination, staged);
+        HashManifest.write(destination, staged, destination.resolve("artifacts.sha256"));
+        System.out.println("published " + staged.stream()
+                .filter(path -> !path.getFileName().toString().endsWith(".sha256"))
+                .count() + " file(s) to " + destination);
+        return 0;
+    }
+
     private static String usage() {
         return """
                 mini-mvn %s - the mini-compiler build engine
@@ -756,15 +1193,19 @@ public final class Main {
                   mini-mvn build [--module M] [--with-deps] [--target P] [--file kava.xml]
                   mini-mvn install [--to DIR] [--module M] [--with-deps] [--target P] [--file kava.xml]
                   mini-mvn test --suite smoke|unit|integration|full [--file kava.xml]
+                  mini-mvn run [mini-rio|owner/repo] [-platform default|arm|x86] [-profile debug|release|static|dynamic] [--port N] [--workspace DIR] [-- args...]
                   mini-mvn run <project-dir> [--verbose] [-- args...]
                   mini-mvn dist <project-dir> [--to DIR] [--verbose]
+                  mini-mvn dependencies --tree [mini-rio|--file rio.xml]
+                  mini-mvn verify [--baseline A --compare B] [--file kava.xml|rio.xml]
+                  mini-mvn publish [mini-rio|--file descriptor] [--to DIR]
                   mini-mvn doctor [--file kava.xml]
                   mini-mvn clean [--file kava.xml]
                   mini-mvn --help
 
                 options:
                   --file <path>    project file (default: kava.xml)
-                  --to <dir>       install/output prefix (default: dist/ for install, <project-dir>/dist for dist)
+                  --to <dir>       install/publish/output prefix
                   --module <name>  build one module
                   --with-deps      build the selected module's dependencies first
                   --target <id>    restrict work to one platform id
@@ -773,10 +1214,10 @@ public final class Main {
                   --verbose        print each command before running it
 
                 run:
-                  Compiles the program described by <project-dir>/program.manifest to a
-                  native executable (building the toolchain first if needed) and runs it.
-                  Arguments after a bare -- are passed through to the program; the exit
-                  code is the program's own.
+                  With no project argument, compiles <project-dir>/program.manifest to a
+                  native executable. With a GitHub project, fetches rio.xml, resolves
+                  dependencies from GitHub, builds and starts it. Java is the default
+                  runtime; static|dynamic require -platform arm|x86.
                 """.formatted(VERSION);
     }
 
@@ -982,6 +1423,58 @@ public final class Main {
     }
 
     private record SuiteHit(ModuleFile module, ModuleFile.Suite suite) {
+    }
+
+    private record RioProject(Path dir, RioFile descriptor, String repository) {
+    }
+
+    static final class RunOptions {
+        String spec;
+        String file;
+        String platform;
+        String profile;
+        String port;
+        String workspace;
+        String ref;
+        boolean verbose;
+        final List<String> programArgs = new ArrayList<>();
+
+        static RunOptions parse(String[] args) {
+            RunOptions options = new RunOptions();
+            int separator = -1;
+            for (int i = 1; i < args.length; i++) {
+                if (args[i].equals("--")) {
+                    separator = i;
+                    break;
+                }
+            }
+            int limit = separator < 0 ? args.length : separator;
+            for (int i = 1; i < limit; i++) {
+                String arg = args[i];
+                switch (arg) {
+                    case "--file", "-f" -> options.file = Options.value(args, ++i, arg);
+                    case "--platform", "-platform" -> options.platform = Options.value(args, ++i, arg);
+                    case "--profile", "-profile" -> options.profile = Options.value(args, ++i, arg);
+                    case "--port" -> options.port = Options.value(args, ++i, arg);
+                    case "--workspace" -> options.workspace = Options.value(args, ++i, arg);
+                    case "--ref" -> options.ref = Options.value(args, ++i, arg);
+                    case "--verbose", "-v" -> options.verbose = true;
+                    default -> {
+                        if (arg.startsWith("-")) throw new UsageException("unknown option: " + arg);
+                        if (options.spec != null) {
+                            throw new UsageException("run takes a single project: " + arg);
+                        }
+                        options.spec = arg;
+                    }
+                }
+            }
+            if (separator >= 0) {
+                for (int i = separator + 1; i < args.length; i++) {
+                    options.programArgs.add(args[i]);
+                }
+            }
+            return options;
+        }
     }
 
     static final class Options {

@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:mini:rio:project"
+           xmlns="urn:mini:rio:project"
+           elementFormDefault="qualified">
+
+  <xs:element name="rio">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="repository" type="xs:string"/>
+        <xs:element name="ref" type="xs:string" minOccurs="0"/>
+        <xs:element name="defaultRuntime" type="runtime" minOccurs="0"/>
+        <xs:element name="defaultPlatform" type="xs:string" minOccurs="0"/>
+        <xs:element name="run" type="run"/>
+        <xs:element name="platforms" type="platforms"/>
+        <xs:element name="profiles" type="profiles"/>
+        <xs:element name="dependencies" type="dependencies" minOccurs="0"/>
+        <xs:element name="artifacts" type="artifacts" minOccurs="0"/>
+      </xs:sequence>
+      <xs:attribute name="format" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:simpleType name="runtime">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="java"/>
+      <xs:enumeration value="native"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="run">
+    <xs:attribute name="main" type="xs:string" use="required"/>
+    <xs:attribute name="browser" type="xs:string" use="required"/>
+    <xs:attribute name="port" type="xs:string" use="required"/>
+    <xs:attribute name="workspace" type="xs:string"/>
+  </xs:complexType>
+
+  <xs:complexType name="platforms">
+    <xs:sequence>
+      <xs:element name="platform" minOccurs="1" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="name" type="xs:string" use="required"/>
+          <xs:attribute name="runtime" type="runtime" use="required"/>
+          <xs:attribute name="target" type="xs:string"/>
+          <xs:attribute name="cc" type="xs:string"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="profiles">
+    <xs:sequence>
+      <xs:element name="profile" minOccurs="1" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="name" type="xs:string" use="required"/>
+          <xs:attribute name="runtime" type="runtime"/>
+          <xs:attribute name="target" type="xs:string"/>
+          <xs:attribute name="cc" type="xs:string"/>
+          <xs:attribute name="static" type="xs:boolean" default="false"/>
+          <xs:attribute name="noOpt" type="xs:boolean" default="false"/>
+          <xs:attribute name="gc" type="xs:string"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="dependencies">
+    <xs:sequence>
+      <xs:element name="dependency" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="name" type="xs:string" use="required"/>
+          <xs:attribute name="repository" type="xs:string" use="required"/>
+          <xs:attribute name="ref" type="xs:string"/>
+          <xs:attribute name="kind" type="xs:string"/>
+          <xs:attribute name="install" type="xs:string"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="artifacts">
+    <xs:sequence>
+      <xs:element name="artifact" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="id" type="xs:string" use="required"/>
+          <xs:attribute name="path" type="xs:string" use="required"/>
+          <xs:attribute name="sha256" type="xs:string"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+</xs:schema>

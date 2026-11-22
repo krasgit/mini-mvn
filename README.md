@@ -43,8 +43,12 @@ Commands:
 mini-mvn build [--module M] [--with-deps] [--target P] [--file kava.xml]
 mini-mvn install [--to DIR] [--module M] [--with-deps] [--file kava.xml]
 mini-mvn test [--suite smoke|full] [--file kava.xml]
+mini-mvn run [mini-rio|owner/repo] [-platform default|arm|x86] [-profile debug|release|static|dynamic] [--port N] [--workspace DIR] [-- args...]
 mini-mvn run <project-dir> [--verbose] [-- args...]
 mini-mvn dist <project-dir> [--to DIR] [--verbose]
+mini-mvn dependencies --tree [mini-rio|--file rio.xml]
+mini-mvn verify [--baseline A --compare B] [--file kava.xml|rio.xml]
+mini-mvn publish [mini-rio|--file descriptor] [--to DIR]
 mini-mvn doctor [--file kava.xml]
 mini-mvn clean [--file kava.xml]
 mini-mvn --help
@@ -55,12 +59,24 @@ mini-mvn --help
 `program.manifest` program with that repository's compiler jar and native libraries, then
 run or package the produced binary.
 
+With a GitHub project, `run` fetches `rio.xml`, pins the commit SHA, caches the source under
+`~/.cache/mini-mvn`, resolves dependencies, builds and starts it. Java is the default
+runtime; `static|dynamic` require `-platform arm|x86`. The engine itself stays Java-only.
+
+```bash
+mini-mvn run mini-rio
+mini-mvn run mini-rio -platform arm -profile static
+mini-mvn verify --file rio.xml
+mini-mvn publish mini-rio --to dist/publish
+```
+
 ## Descriptors
 
 - `kava.xml` — project: platforms, modules, plugins, bindings, goals.
+- `rio.xml` — remote runnable project: GitHub repo, platforms, profiles, dependencies, artifacts.
 - `mini-maven/module.xml` — this engine module: source sets, vendored JUnit deps, jar artifact, test suites.
 - `plugins/*/plugin.xml` — tool definitions (`javac`, `jar`, `junit`).
-- `schema/*.xsd` — XML namespaces for project/module/plugin/state files.
+- `schema/*.xsd` — XML namespaces for project/module/plugin/state/rio files.
 - `third-party/repository/` — vendored JUnit jars with `.sha256` checksums.
 
 Verify the vendored jars:

@@ -12,14 +12,16 @@ can find the JDK script even when `JAVA_HOME` is not exported by the caller.
 
 ## Engine (`mini.mvn.*`)
 
-- `Main` — CLI parsing, command dispatch, JUnit test runner, staging/run/dist helpers.
+- `Main` — CLI parsing, command dispatch, JUnit test runner, staging/run/dist/publish/verify helpers.
 - `engine.Engine` — module selection/ordering, compile/jar/uberjar, native builds, plugin dispatch.
-- `engine.StateStore` / `engine.Hashing` — incremental SHA-256 state under `target/.mini-maven`.
-- `model.*` — strict StAX parsers for `kava.xml`, `module.xml`, `plugin.xml`, generated state.
+- `engine.RemoteResolver` — GitHub `rio.xml` fetch, commit pinning and source cache.
+- `engine.StateStore` / `engine.Hashing` / `engine.HashManifest` — incremental SHA-256 state and artifact manifests.
+- `engine.PomWriter` — local publish staging for JAR/POM artifacts.
+- `model.*` — strict StAX parsers for `kava.xml`, `rio.xml`, `module.xml`, `plugin.xml`, generated state.
 - `xml.*` — secure, namespace-aware XML helpers (external entities and DOCTYPE rejected).
 
 The engine has no third-party runtime dependencies. JUnit jars are used only to compile and
-run the engine's own `XmlTest` suite.
+run the engine's own `XmlTest` and `RioTest` suites.
 
 The test runner derives paths and the classpath from the module whose suite is being run, so
 any module with `<testSources>` and `<tests>` can be tested with the same command.
