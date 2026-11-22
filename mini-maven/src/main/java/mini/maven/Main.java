@@ -270,6 +270,14 @@ public final class Main {
                         + " (" + dependency.ref() + ")");
                 continue;
             }
+            if (dependency.kind().equals("lsp-jar")) {
+                RemoteResolver.Resolved lsp = RemoteResolver.resolveSource(
+                        dependency.repository() + "@" + dependency.ref(), options.verbose);
+                ensureLspJar(lsp, env, options.verbose);
+                System.out.println("dependency lsp-jar " + lsp.repository()
+                        + "@" + lsp.sha() + " -> " + env.get("RIO_LSP_JAR"));
+                continue;
+            }
             if (!dependency.kind().equals("kava-dist")) continue;
             if (resolution.runtime().equals("java")) {
                 System.out.println("dependency kava-dist " + dependency.repository()
@@ -410,6 +418,32 @@ public final class Main {
 
     private static boolean markerBuildMatches(Path marker, String sha) throws IOException {
         return Files.readString(marker, StandardCharsets.UTF_8).trim().equals(sha);
+    }
+
+    private static void ensureLspJar(RemoteResolver.Resolved tool, Map<String, String> env,
+                                     boolean verbose) throws IOException {
+        Path prefix = RemoteResolver.cacheRoot().resolve("lsp").resolve(tool.sha());
+        Path marker = prefix.resolve(".mini-mvn-install");
+        Path jar = prefix.resolve("bin").resolve("mini-lsp.jar");
+        if (Files.isRegularFile(marker)
+                && markerBuildMatches(marker, tool.sha())
+                && Files.isRegularFile(jar)) {
+            env.put("RIO_LSP_JAR", jar.toString());
+            return;
+        }
+        Path launcher = Path.of(System.getProperty("mini.mvn.home", "."))
+                .toAbsolutePath().normalize().resolve("mini-mvn");
+        if (!Files.isRegularFile(launcher)) {
+            throw new BuildException("mini-mvn launcher not found at " + launcher);
+        }
+        Exec.Result result = Exec.run(List.of("sh", launcher.toString(), "install",
+                "--to", prefix.toString()), tool.dir(), env, verbose);
+        if (!result.ok()) {
+            throw new BuildException("installing lsp-jar failed:\n" + result.output());
+        }
+        Files.createDirectories(prefix);
+        Files.writeString(marker, tool.sha(), StandardCharsets.UTF_8);
+        env.put("RIO_LSP_JAR", jar.toString());
     }
 
     private static void verifyDeclaredArtifacts(RioFile rio, Path projectDir) throws IOException {

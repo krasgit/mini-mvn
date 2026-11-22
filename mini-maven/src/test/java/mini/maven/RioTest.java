@@ -35,6 +35,7 @@ class RioTest {
               </profiles>
               <dependencies>
                 <dependency name="mini-compiler" repository="krasgit/mini-compiler" ref="main" kind="kava-dist"/>
+                <dependency name="mini-lsp" repository="krasgit/mini-lsp" ref="main" kind="lsp-jar"/>
               </dependencies>
             </rio>
             """;
@@ -53,7 +54,10 @@ class RioTest {
         assertEquals("default", rio.defaultPlatform());
         assertEquals("8099", rio.run().port());
         assertEquals(3, rio.platforms().size());
-        assertEquals(1, rio.dependencies().size());
+        assertEquals(2, rio.dependencies().size());
+        assertEquals("krasgit/mini-lsp", rio.dependency("mini-lsp").repository());
+        assertEquals("lsp-jar", rio.dependency("mini-lsp").kind());
+        assertEquals("main", rio.dependency("mini-lsp").ref());
     }
 
     @Test
