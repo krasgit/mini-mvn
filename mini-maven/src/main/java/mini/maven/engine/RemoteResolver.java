@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import mini.maven.model.RioFile;
 
@@ -151,7 +152,11 @@ public final class RemoteResolver {
     }
 
     private static void run(List<String> command, Path dir, boolean verbose) throws IOException {
-        Exec.Result result = Exec.run(command, dir, null, verbose);
+        Map<String, String> env = Map.of(
+                "GIT_CONFIG_COUNT", "1",
+                "GIT_CONFIG_KEY_0", "safe.directory",
+                "GIT_CONFIG_VALUE_0", dir.toAbsolutePath().normalize().toString());
+        Exec.Result result = Exec.run(command, dir, env, verbose);
         if (!result.ok()) {
             throw new IOException(String.join(" ", command) + " failed:\n" + result.output());
         }
