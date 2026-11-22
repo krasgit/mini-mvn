@@ -15,10 +15,12 @@ import java.util.Map;
 import java.util.Set;
 
 import mini.maven.engine.BuildException;
+import mini.maven.engine.BuiltinPlugins;
 import mini.maven.engine.Engine;
 import mini.maven.engine.Exec;
 import mini.maven.engine.HashManifest;
 import mini.maven.engine.PomWriter;
+import mini.maven.engine.ProjectSplitter;
 import mini.maven.engine.RemoteResolver;
 import mini.maven.model.KavaFile;
 import mini.maven.model.ModuleFile;
@@ -62,6 +64,9 @@ public final class Main {
         }
 
         String command = args[0];
+        if (command.equals("split")) {
+            return splitCommand(args);
+        }
         if (command.equals("run")) {
             return runCommand(args);
         }
@@ -954,14 +959,19 @@ public final class Main {
         }
         var plugins = new java.util.LinkedHashMap<String, PluginFile>();
         for (var ref : project.plugins()) {
-            Path file = projectDir.resolve(ref.path()).resolve("plugin.xml").normalize();
-            if (!Files.isRegularFile(file)) {
-                throw new XmlException(file, "missing plugin descriptor for '" + ref.id() + "'");
+            PluginFile plugin;
+            if (ref.path() == null) {
+                plugin = BuiltinPlugins.get(ref.id());
+            } else {
+                Path file = projectDir.resolve(ref.path()).resolve("plugin.xml").normalize();
+                if (!Files.isRegularFile(file)) {
+                    throw new XmlException(file, "missing plugin descriptor for '" + ref.id() + "'");
+                }
+                plugin = PluginFile.load(file);
             }
-            PluginFile plugin = PluginFile.load(file);
             if (!plugin.name().equals(ref.id())) {
-                throw new XmlException(file, "plugin name '" + plugin.name()
-                        + "' does not match kava.xml entry '" + ref.id() + "'");
+                throw new XmlException(projectDir.resolve("kava.xml"), "plugin name '"
+                        + plugin.name() + "' does not match kava.xml entry '" + ref.id() + "'");
             }
             plugins.put(plugin.name(), plugin);
         }
@@ -1185,11 +1195,24 @@ public final class Main {
         return 0;
     }
 
+    private static int splitCommand(String[] args) throws IOException {
+        SplitOptions options = SplitOptions.parse(args);
+        ProjectSplitter.Result result = ProjectSplitter.split(options.file, options.module,
+                options.repo, options.visibility, options.to, options.group, options.force,
+                options.dryRun, options.localOnly, options.verbose);
+        for (ProjectSplitter.Step step : result.steps()) {
+            System.out.println("+ cd " + step.dir() + " && " + String.join(" ", step.args()));
+        }
+        if (options.localOnly) System.out.println("mini-mvn: local split only, GitHub skipped");
+        return 0;
+    }
+
     private static String usage() {
         return """
                 mini-mvn %s - the mini-compiler build engine
 
                 usage:
+                  mini-mvn split --module M --repo owner/name [--visibility public|private] [--to DIR] [--group G] [--force] [--dry-run] [--local-only]
                   mini-mvn build [--module M] [--with-deps] [--target P] [--file kava.xml]
                   mini-mvn install [--to DIR] [--module M] [--with-deps] [--target P] [--file kava.xml]
                   mini-mvn test --suite smoke|unit|integration|full [--file kava.xml]
@@ -1211,6 +1234,12 @@ public final class Main {
                   --target <id>    restrict work to one platform id
                   --suite <name>   test suite to run
                   --jobs <n>       parallel jobs (default: 1)
+                  --repo <owner/name>  GitHub target for split
+                  --visibility <public|private>  target repo visibility (default: public)
+                  --group <G>      vendored dependency group for split (default: owner)
+                  --force          overwrite an existing split target
+                  --dry-run        show files/commands without writing
+                  --local-only     prepare files without GitHub operations
                   --verbose        print each command before running it
 
                 run:
@@ -1218,7 +1247,13 @@ public final class Main {
                   native executable. With a GitHub project, fetches rio.xml, resolves
                   dependencies from GitHub, builds and starts it. Java is the default
                   runtime; static|dynamic require -platform arm|x86.
-                """.formatted(VERSION);
+
+                split:
+                  Extracts a module into a new GitHub project. Copies sources and plugins,
+                  vendors the module dependency closure, generates kava.xml, removes the
+                  module from the source project, creates/pushes the repo and logs every
+                  git/GitHub operation.
+                 """.formatted(VERSION);
     }
 
     /**
@@ -1477,6 +1512,42 @@ public final class Main {
         }
     }
 
+    static final class SplitOptions {
+        Path file = Path.of("kava.xml");
+        Path to;
+        String module;
+        String repo;
+        String visibility = "public";
+        String group;
+        boolean force;
+        boolean dryRun;
+        boolean localOnly;
+        boolean verbose;
+
+        static SplitOptions parse(String[] args) {
+            SplitOptions options = new SplitOptions();
+            for (int i = 1; i < args.length; i++) {
+                String arg = args[i];
+                switch (arg) {
+                    case "--file", "-f" -> options.file = Path.of(Options.value(args, ++i, arg));
+                    case "--to" -> options.to = Path.of(Options.value(args, ++i, arg));
+                    case "--module", "-m" -> options.module = Options.value(args, ++i, arg);
+                    case "--repo" -> options.repo = Options.value(args, ++i, arg);
+                    case "--visibility" -> options.visibility = Options.value(args, ++i, arg);
+                    case "--group" -> options.group = Options.value(args, ++i, arg);
+                    case "--force" -> options.force = true;
+                    case "--dry-run" -> options.dryRun = true;
+                    case "--local-only" -> options.localOnly = true;
+                    case "--verbose", "-v" -> options.verbose = true;
+                    default -> throw new UsageException("unknown option: " + arg);
+                }
+            }
+            if (options.module == null) throw new UsageException("split requires --module");
+            if (options.repo == null) throw new UsageException("split requires --repo");
+            return options;
+        }
+    }
+
     static final class Options {
         Path file;
         Path to;
@@ -1492,14 +1563,14 @@ public final class Main {
             for (int i = from; i < args.length; i++) {
                 String arg = args[i];
                 switch (arg) {
-                    case "--file", "-f" -> options.file = Path.of(value(args, ++i, arg));
-                    case "--to" -> options.to = Path.of(value(args, ++i, arg));
-                    case "--module", "-m" -> options.module = value(args, ++i, arg);
-                    case "--target", "-t" -> options.target = value(args, ++i, arg);
-                    case "--suite", "-s" -> options.suite = value(args, ++i, arg);
+                    case "--file", "-f" -> options.file = Path.of(Options.value(args, ++i, arg));
+                    case "--to" -> options.to = Path.of(Options.value(args, ++i, arg));
+                    case "--module", "-m" -> options.module = Options.value(args, ++i, arg);
+                    case "--target", "-t" -> options.target = Options.value(args, ++i, arg);
+                    case "--suite", "-s" -> options.suite = Options.value(args, ++i, arg);
                     case "--with-deps" -> options.withDeps = true;
                     case "--verbose", "-v" -> options.verbose = true;
-                    case "--jobs", "-j" -> options.jobs = number(value(args, ++i, arg));
+                    case "--jobs", "-j" -> options.jobs = number(Options.value(args, ++i, arg));
                     default -> throw new UsageException("unknown option: " + arg);
                 }
             }

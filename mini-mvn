@@ -6,7 +6,11 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 JAVA_HOME=$(sh "$ROOT/scripts/find-jdk17.sh")
 export JAVA_HOME
 
-STATE="$ROOT/target/.mini-maven"
+if [ -n "${MINI_MVN_STATE:-}" ]; then
+    STATE=$MINI_MVN_STATE
+else
+    STATE="$ROOT/target/.mini-maven"
+fi
 OUT="$STATE/bootstrap"
 STAMP="$STATE/bootstrap.stamp"
 SRC="$ROOT/mini-maven/src/main/java"

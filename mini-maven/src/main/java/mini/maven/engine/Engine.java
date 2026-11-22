@@ -220,7 +220,7 @@ public final class Engine {
 
         List<Path> inputs = new ArrayList<>(sources);
         inputs.add(module.file());
-        inputs.add(plugin.file());
+        addInput(inputs, plugin.file());
         inputs.add(project.file());
         inputs.addAll(classpath);
         List<FileState> inputStates = inputStates(state, inputs);
@@ -284,7 +284,7 @@ public final class Engine {
         String version = version(plugin, "jar", toolPath);
         List<Path> inputs = new ArrayList<>(files(classes));
         inputs.add(module.file());
-        inputs.add(plugin.file());
+        addInput(inputs, plugin.file());
         inputs.add(project.file());
         List<FileState> inputStates = inputStates(state, inputs);
         List<String> extras = List.of("jar", version, artifact.id(),
@@ -339,7 +339,7 @@ public final class Engine {
         List<Path> inputs = new ArrayList<>(files(classes));
         inputs.addAll(depJars);
         inputs.add(module.file());
-        inputs.add(plugin.file());
+        addInput(inputs, plugin.file());
         inputs.add(project.file());
         List<FileState> inputStates = inputStates(state, inputs);
         List<String> extras = new ArrayList<>(List.of("uberjar", version, artifact.id(),
@@ -667,8 +667,8 @@ public final class Engine {
             objects.add(object);
             String nodeId = "cc:" + platform.id() + ":" + state.pathKey(object);
 
-            List<Path> inputs = new ArrayList<>(List.of(source, module.file(), gcc.file(),
-                    project.file()));
+            List<Path> inputs = new ArrayList<>(List.of(source, module.file(), project.file()));
+            addInput(inputs, gcc.file());
             inputs.addAll(includeHeaders(module));
             List<FileState> inputStates = inputStates(state, inputs);
             List<String> extras = new ArrayList<>(List.of("cc", version, platform.id()));
@@ -734,7 +734,7 @@ public final class Engine {
 
         List<Path> inputs = new ArrayList<>(sources);
         inputs.add(module.file());
-        inputs.add(kavac.file());
+        addInput(inputs, kavac.file());
         inputs.add(project.file());
         inputs.add(compilerJar);
         List<FileState> inputStates = inputStates(state, inputs);
@@ -799,7 +799,7 @@ public final class Engine {
 
         List<Path> inputs = new ArrayList<>(objects);
         inputs.add(module.file());
-        inputs.add(ar.file());
+        addInput(inputs, ar.file());
         List<FileState> inputStates = inputStates(state, inputs);
         List<String> extras = List.of("ar", version, platform.id(), artifact.id());
         String key = Hashing.key(inputStates, extras);
@@ -839,7 +839,7 @@ public final class Engine {
         List<String> linkLibs = sharedLibDeps(module, platform);
         List<Path> inputs = new ArrayList<>(objects);
         inputs.add(module.file());
-        inputs.add(gcc.file());
+        addInput(inputs, gcc.file());
         List<FileState> inputStates = inputStates(state, inputs);
         List<String> extras = new ArrayList<>(List.of("so", version, platform.id(),
                 artifact.id()));
@@ -1170,6 +1170,10 @@ public final class Engine {
         } catch (IOException e) {
             throw new BuildException("cannot run " + what + ": " + e.getMessage(), e);
         }
+    }
+
+    private static void addInput(List<Path> inputs, Path path) {
+        if (path != null && Files.isRegularFile(path)) inputs.add(path);
     }
 
     private static List<FileState> inputStates(StateStore state, List<Path> inputs) {

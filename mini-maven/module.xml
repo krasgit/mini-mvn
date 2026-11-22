@@ -25,6 +25,8 @@
     <suite name="smoke">
       <include class="mini.maven.XmlTest"/>
       <include class="mini.maven.RioTest"/>
+      <include class="mini.maven.SplitTest"/>
+      <include class="mini.maven.BuiltinPluginsTest"/>
     </suite>
     <suite name="full">
       <include package="mini.maven"/>

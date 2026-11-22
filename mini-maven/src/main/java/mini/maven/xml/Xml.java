@@ -1,7 +1,9 @@
 package mini.maven.xml;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -20,6 +22,22 @@ public final class Xml {
     }
 
     public static XmlNode parse(Path file) {
+        try (InputStream in = Files.newInputStream(file)) {
+            return parse(in, file);
+        } catch (IOException e) {
+            throw new XmlException(file, "cannot read XML: " + e.getMessage());
+        }
+    }
+
+    public static XmlNode parse(String xml, Path source) {
+        try (InputStream in = new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8))) {
+            return parse(in, source);
+        } catch (IOException e) {
+            throw new XmlException(source, "cannot read XML: " + e.getMessage());
+        }
+    }
+
+    private static XmlNode parse(InputStream in, Path source) {
         XMLInputFactory factory = XMLInputFactory.newFactory();
         factory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
         factory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
@@ -30,7 +48,7 @@ public final class Xml {
         Deque<XmlNode> stack = new ArrayDeque<>();
         XmlNode root = null;
 
-        try (InputStream in = Files.newInputStream(file)) {
+        try {
             XMLStreamReader reader = factory.createXMLStreamReader(in);
             try {
                 while (reader.hasNext()) {
@@ -42,13 +60,13 @@ public final class Xml {
                                 attrs.put(reader.getAttributeLocalName(i),
                                         reader.getAttributeValue(i));
                             }
-                            XmlNode node = new XmlNode(file, reader.getLocalName(),
+                            XmlNode node = new XmlNode(source, reader.getLocalName(),
                                     reader.getNamespaceURI(), attrs,
                                     reader.getLocation().getLineNumber(),
                                     reader.getLocation().getColumnNumber());
                             if (stack.isEmpty()) {
                                 if (root != null) {
-                                    throw new XmlException(file, node.line(), node.column(),
+                                    throw new XmlException(source, node.line(), node.column(),
                                             "more than one root element");
                                 }
                                 root = node;
@@ -59,7 +77,7 @@ public final class Xml {
                         }
                         case XMLStreamConstants.END_ELEMENT -> {
                             if (stack.isEmpty()) {
-                                throw new XmlException(file, "unbalanced end element");
+                                throw new XmlException(source, "unbalanced end element");
                             }
                             stack.pop();
                         }
@@ -68,7 +86,7 @@ public final class Xml {
                              XMLStreamConstants.SPACE -> {
                             if (!stack.isEmpty()) stack.peek().appendText(reader.getText());
                         }
-                        case XMLStreamConstants.DTD -> throw new XmlException(file,
+                        case XMLStreamConstants.DTD -> throw new XmlException(source,
                                 "DOCTYPE is not allowed");
                         default -> {
                         }
@@ -78,21 +96,26 @@ public final class Xml {
                 reader.close();
             }
         } catch (XMLStreamException e) {
-            throw new XmlException(file, "cannot parse XML: " + e.getMessage());
-        } catch (IOException e) {
-            throw new XmlException(file, "cannot read XML: " + e.getMessage());
+            throw new XmlException(source, "cannot parse XML: " + e.getMessage());
         }
 
-        if (root == null) throw new XmlException(file, "empty document");
-        if (!stack.isEmpty()) throw new XmlException(file, "unclosed element <"
+        if (root == null) throw new XmlException(source, "empty document");
+        if (!stack.isEmpty()) throw new XmlException(source, "unclosed element <"
                 + stack.peek().name() + ">");
         return root;
     }
 
     public static XmlNode root(Path file, String name, String namespace) {
-        XmlNode root = parse(file);
+        return root(parse(file), file, name, namespace);
+    }
+
+    public static XmlNode root(String xml, Path source, String name, String namespace) {
+        return root(parse(xml, source), source, name, namespace);
+    }
+
+    private static XmlNode root(XmlNode root, Path source, String name, String namespace) {
         if (!root.name().equals(name)) {
-            throw new XmlException(file, root.line(), root.column(),
+            throw new XmlException(source, root.line(), root.column(),
                     "expected <" + name + ">, got <" + root.name() + ">");
         }
         root.expectNamespace(namespace);

@@ -70,8 +70,9 @@ public record KavaFile(
         Map<String, PluginRef> byPlugin = new LinkedHashMap<>();
         XmlNode pluginsNode = root.requireChild("plugins");
         for (XmlNode node : pluginsNode.children("plugin")) {
+            String pluginPath = optionalAttr(node, "path");
             PluginRef plugin = new PluginRef(node.requireAttr("id"),
-                    Path.of(node.requireAttr("path")));
+                    pluginPath == null ? null : Path.of(pluginPath));
             if (byPlugin.putIfAbsent(plugin.id(), plugin) != null) {
                 throw node.error("duplicate plugin '" + plugin.id() + "'");
             }

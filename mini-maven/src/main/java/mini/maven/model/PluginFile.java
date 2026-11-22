@@ -28,7 +28,18 @@ public record PluginFile(
     }
 
     public static PluginFile load(Path file) {
-        XmlNode root = Xml.root(file, "plugin", NS);
+        return parse(Xml.root(file, "plugin", NS), file);
+    }
+
+    public static PluginFile parse(String xml, Path source) {
+        return parse(Xml.root(xml, source, "plugin", NS), source);
+    }
+
+    public static PluginFile from(XmlNode root, Path file) {
+        return parse(root, file);
+    }
+
+    private static PluginFile parse(XmlNode root, Path file) {
         root.refuseUnknownChildren("implementation", "tools", "settings", "args", "cache");
         String name = root.requireAttr("name");
         String provides = root.requireAttr("provides");

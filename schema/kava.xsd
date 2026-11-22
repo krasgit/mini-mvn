@@ -47,7 +47,7 @@
       <xs:element name="plugin" minOccurs="0" maxOccurs="unbounded">
         <xs:complexType>
           <xs:attribute name="id" type="xs:string" use="required"/>
-          <xs:attribute name="path" type="xs:string" use="required"/>
+          <xs:attribute name="path" type="xs:string"/>
         </xs:complexType>
       </xs:element>
     </xs:sequence>

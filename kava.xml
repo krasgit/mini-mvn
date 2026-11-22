@@ -12,9 +12,9 @@
   </modules>
 
   <plugins>
-    <plugin id="javac" path="plugins/javac"/>
-    <plugin id="jar" path="plugins/jar"/>
-    <plugin id="junit" path="plugins/junit"/>
+    <plugin id="javac"/>
+    <plugin id="jar"/>
+    <plugin id="junit"/>
   </plugins>
 
   <bindings>

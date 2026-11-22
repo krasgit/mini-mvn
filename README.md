@@ -40,6 +40,7 @@ project being built. Use `--file /path/to/kava.xml` to select a descriptor expli
 Commands:
 
 ```
+mini-mvn split --module M --repo owner/name [--visibility public|private] [--to DIR] [--group G] [--force] [--dry-run] [--local-only]
 mini-mvn build [--module M] [--with-deps] [--target P] [--file kava.xml]
 mini-mvn install [--to DIR] [--module M] [--with-deps] [--file kava.xml]
 mini-mvn test [--suite smoke|full] [--file kava.xml]
@@ -59,9 +60,24 @@ mini-mvn --help
 `program.manifest` program with that repository's compiler jar and native libraries, then
 run or package the produced binary.
 
+`split` extracts a module into a new GitHub project: it copies the module, vendors the
+module dependency closure (including internal module jars), generates the new `kava.xml`
+with built-in plugin references, removes the module from the source descriptor, creates/pushes
+the repo and logs every git/GitHub operation through `[git]` output and `MINI_MVN_GIT_LOG`.
+`--dry-run` only prints the plan; `--local-only` writes files without touching GitHub.
+
 With a GitHub project, `run` fetches `rio.xml`, pins the commit SHA, caches the source under
-`~/.cache/mini-mvn`, resolves dependencies, builds and starts it. Java is the default
-runtime; `static|dynamic` require `-platform arm|x86`. The engine itself stays Java-only.
+`$MINI_MVN_CACHE` (default `~/.cache/mini-mvn`), resolves dependencies, builds and starts it.
+Java is the default runtime; `static|dynamic` require `-platform arm|x86`. The engine itself
+stays Java-only.
+
+Environment overrides:
+
+- `MINI_MVN_CACHE` — cache root for descriptors, sources and Kava dist (default `~/.cache/mini-mvn`).
+- `MINI_MVN_STATE` — bootstrap/state directory used by the `mini-mvn` launcher.
+- `MINI_MVN_VERBOSE=1` — print every external command and stream its output.
+- `MINI_MVN_GIT_LOG` — append timestamped `gh`/`git`/GitHub `curl` commands and exit codes.
+- `MINI_MVN_OFFLINE=1` — reuse cached descriptor/SHA instead of fetching from GitHub.
 
 ```bash
 mini-mvn run mini-rio
@@ -75,7 +91,7 @@ mini-mvn publish mini-rio --to dist/publish
 - `kava.xml` — project: platforms, modules, plugins, bindings, goals.
 - `rio.xml` — remote runnable project: GitHub repo, platforms, profiles, dependencies, artifacts.
 - `mini-maven/module.xml` — this engine module: source sets, vendored JUnit deps, jar artifact, test suites.
-- `plugins/*/plugin.xml` — tool definitions (`javac`, `jar`, `junit`).
+- `mini-maven/src/main/java/mini/maven/engine/BuiltinPlugins.java` — built-in tool definitions (`javac`, `jar`, `junit`, `kavac`, `gcc`, `ar`); `kava.xml` uses `<plugin id="..."/>`, while `path` is an optional override for custom plugins.
 - `schema/*.xsd` — XML namespaces for project/module/plugin/state/rio files.
 - `third-party/repository/` — vendored JUnit jars with `.sha256` checksums.
 
