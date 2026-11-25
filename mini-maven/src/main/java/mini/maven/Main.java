@@ -4,9 +4,13 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -602,30 +606,53 @@ public final class Main {
         return 0;
     }
 
+    /** Remove a directory tree without following symlinks and without swallowing failures. */
     private static void cleanDir(Path dir) throws IOException {
-        if (!Files.exists(dir)) return;
-        try (var walk = Files.walk(dir)) {
-            var paths = walk.sorted((a,b) -> b.getNameCount() - a.getNameCount()).toList();
-            for (Path p : paths) {
-                if (p.equals(dir)) continue;
+        if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) return;
+        List<IOException> errors = new ArrayList<>();
+        Files.walkFileTree(dir, new SimpleFileVisitor<Path>() {
+            @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                 try {
-                    Files.deleteIfExists(p);
-                } catch (Exception ignored) {
+                    Files.deleteIfExists(file);
+                } catch (IOException e) {
+                    errors.add(e);
                 }
+                return FileVisitResult.CONTINUE;
             }
+
+            @Override public FileVisitResult postVisitDirectory(Path d, IOException exc) {
+                if (exc != null) errors.add(exc);
+                try {
+                    Files.deleteIfExists(d);
+                } catch (IOException e) {
+                    errors.add(e);
+                }
+                return FileVisitResult.CONTINUE;
+            }
+        });
+        if (!errors.isEmpty()) {
+            throw new IOException("cannot clean " + dir + ": " + errors.get(0).getMessage(),
+                    errors.get(0));
         }
     }
 
-    private static String targetTriple(Path repoDir) {
-        try {
-            ProcessBuilder pb = new ProcessBuilder("uname", "-m");
-            pb.directory(repoDir.toFile());
-            Process p = pb.start();
-            String out = new String(p.getInputStream().readAllBytes()).trim();
-            if (p.waitFor() == 0) {
-                if (out.contains("aarch64") || out.contains("arm64")) return "aarch64-linux-gnu";
-            }
-        } catch (Exception ignored) {}
+    /** Guard the destructive {@code dist --to} cleanup. */
+    private static void assertSafeDistDir(Path distDir, Path programDir, Path repoDir,
+                                          boolean force) {
+        if (distDir.getParent() == null
+                || programDir.startsWith(distDir) || repoDir.startsWith(distDir)) {
+            throw new UsageException("refusing to clean " + distDir
+                    + ": it is the filesystem root or contains the project/repository");
+        }
+        if (!force && !distDir.startsWith(programDir)) {
+            throw new UsageException("refusing to clean " + distDir
+                    + " outside the project directory; pass --force to allow it");
+        }
+    }
+
+    private static String targetTriple() {
+        String arch = System.getProperty("os.arch", "");
+        if (arch.contains("aarch64") || arch.contains("arm64")) return "aarch64-linux-gnu";
         return "x86_64-linux-gnu";
     }
 
@@ -724,11 +751,7 @@ public final class Main {
         // Ensure modules needed for testing are built
         Engine engine = new Engine(projectDir, project, overview.modules, overview.plugins,
                 null, true, options.target, options.verbose, options.jobs);
-        try {
-            engine.build();
-        } catch (Exception e) {
-            // continue if build has issues but classes might exist
-        }
+        engine.build();
 
         for (SuiteHit hit : hits) {
             runSuite(projectDir, hit, wanted, options.verbose);
@@ -807,8 +830,11 @@ public final class Main {
             javaCmd.add("-Dmini.runtime.archive=" + runtimeArchive);
         }
         javaCmd.add("JunitRun");
-        mini.maven.engine.Exec.Result r2 = mini.maven.engine.Exec.run(javaCmd, projectDir, null, true);
-        if (!r2.ok()) throw new BuildException("tests failed for suite " + suiteName);
+        mini.maven.engine.Exec.Result r2 = mini.maven.engine.Exec.run(javaCmd, projectDir, null,
+                verbose);
+        if (!r2.ok()) {
+            throw new BuildException("tests failed for suite " + suiteName + ":\n" + r2.output());
+        }
     }
 
     private static List<String> collectSuiteClasses(Path testClasses, ModuleFile.Suite suite) throws IOException {
@@ -969,7 +995,7 @@ public final class Main {
     }
 
     private static void delete(Path path) throws IOException {
-        if (Files.isDirectory(path)) {
+        if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
             try (var entries = Files.list(path)) {
                 for (Path entry : entries.toList()) delete(entry);
             }
@@ -1252,7 +1278,7 @@ public final class Main {
                   mini-mvn test --suite smoke|unit|integration|full [--file kava.xml]
                   mini-mvn run [mini-rio|owner/repo] [-platform default|arm|x86] [-profile debug|release|static|dynamic] [--port N] [--workspace DIR] [-- args...]
                   mini-mvn run <project-dir> [--verbose] [-- args...]
-                  mini-mvn dist <project-dir> [--to DIR] [--verbose]
+                  mini-mvn dist <project-dir> [--to DIR] [--force] [--verbose]
                   mini-mvn dependencies --tree [mini-rio|--file rio.xml]
                   mini-mvn verify [--baseline A --compare B] [--file kava.xml|rio.xml]
                   mini-mvn publish [mini-rio|--file descriptor] [--to DIR]
@@ -1271,7 +1297,7 @@ public final class Main {
                   --repo <owner/name>  GitHub target for split
                   --visibility <public|private>  target repo visibility (default: public)
                   --group <G>      vendored dependency group for split (default: owner)
-                  --force          overwrite an existing split target
+                  --force          overwrite a split target / allow dist --to outside the project
                   --dry-run        show files/commands without writing
                   --local-only     prepare files without GitHub operations
                   --verbose        print each command before running it
@@ -1298,10 +1324,14 @@ public final class Main {
         String dirArg = null;
         Path to = null;
         boolean verbose = false;
+        boolean force = false;
         String runtimeOverride = null;
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--verbose") || args[i].equals("-v")) {
                 verbose = true;
+                continue;
+            } else if (args[i].equals("--force")) {
+                force = true;
                 continue;
             } else if (args[i].equals("--to") && i + 1 < args.length) {
                 to = Path.of(args[i + 1]);
@@ -1389,6 +1419,7 @@ public final class Main {
         }
 
         Path distDir = (to == null ? programDir.resolve("dist") : to).toAbsolutePath().normalize();
+        assertSafeDistDir(distDir, programDir, repoDir, force);
         cleanDir(distDir);
         Files.createDirectories(distDir);
         Path distBinary = distDir.resolve(binary.getFileName());
@@ -1443,7 +1474,7 @@ public final class Main {
                 }
                 // Bundle mini runtime
                 for (String lib : new String[] {"libkava.so", "libmini_runtime.so"}) {
-                    Path src = repoDir.resolve("target").resolve(targetTriple(repoDir)).resolve(lib);
+                    Path src = repoDir.resolve("target").resolve(targetTriple()).resolve(lib);
                     if (!Files.exists(src)) {
                         src = repoDir.resolve("target").resolve("x86_64-linux-gnu").resolve(lib);
                     }

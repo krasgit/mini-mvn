@@ -91,6 +91,13 @@ public final class StateStore implements AutoCloseable {
             try {
                 if (Files.size(output) != state.size()) return false;
                 if (Files.getLastModifiedTime(output).toMillis() != state.mtime()) return false;
+                // Size and mtime can be preserved by a content edit: verify the recorded hash.
+                try {
+                    if (state.sha256() == null
+                            || !state.sha256().equals(Hashing.sha256(output))) return false;
+                } catch (IOException e) {
+                    return false;   // unreadable output is not fresh
+                }
             } catch (IOException e) {
                 return false;
             }
