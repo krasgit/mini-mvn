@@ -19,6 +19,22 @@ sh ./mini-mvn install --to dist
 
 `make build`, `make test`, `make doctor` and `make install` are shortcuts for the same commands.
 
+### Terminal wrapper
+
+Shortcut: `sh /shared/mini-mvn/install.sh` is equivalent to running the installer with
+`MINI_MVN_LINK_DIR=/bin`.
+
+`sh scripts/install-cli.sh` builds the engine, installs `bin/mini-mvn` (a wrapper around
+`target/mini-maven/mini-mvn.jar`) and, when writable, an executable launcher at
+`/usr/local/bin/mini-mvn` that runs the wrapper via `sh`. This also works on `noexec`
+mounts such as `/shared`, where the project wrapper itself cannot carry an exec bit.
+`<repo>/bin` is appended to `PATH` in `~/.bashrc`, `~/.profile` and
+`/etc/profile.d/mini-mvn.sh` (when writable); entries are marker-delimited and replaced
+on every run. If no system bin is available, a POSIX shell-function fallback is used
+instead. Override the launcher directory with `MINI_MVN_LINK_DIR` (e.g. `/bin`), disable it
+with `MINI_MVN_NO_LINK=1`, or override rc/jar paths with `MINI_MVN_RC` / `MINI_MVN_JAR`.
+Use `--force` to replace a foreign `bin/mini-mvn` or launcher.
+
 On first invocation the launcher compiles the engine from `mini-maven/src/main/java` into
 `target/.mini-maven/bootstrap` using the JDK found by `scripts/find-jdk17.sh`. Later runs
 reuse that bootstrap until an engine source file changes.
